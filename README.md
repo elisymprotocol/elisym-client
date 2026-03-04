@@ -210,21 +210,6 @@ src/
     error.rs           # CliError enum
 ```
 
-## Job Flow
-
-```
-Customer                              Provider
-  │                                      │
-  │── NIP-90 job request ──────────────▶│
-  │                                      │── create Solana payment request
-  │◀── PaymentRequired + invoice ───────│
-  │                                      │
-  │── pay on Solana ───────────────────▶│
-  │                                      │── verify payment on-chain
-  │                                      │── call LLM with system prompt
-  │◀── job result ─────────────────────│
-```
-
 ## Environment Variables
 
 | Variable | Description |
