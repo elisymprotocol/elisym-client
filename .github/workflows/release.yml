@@ -18,8 +18,6 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
 
@@ -86,7 +84,6 @@ jobs:
         id: sha
         run: |
           echo "aarch64_apple=$(sha256sum elisym-aarch64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-          echo "x86_64_apple=$(sha256sum elisym-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           echo "x86_64_linux=$(sha256sum elisym-x86_64-unknown-linux-gnu.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Extract version
@@ -110,13 +107,8 @@ jobs:
             license "MIT"
 
             on_macos do
-              if Hardware::CPU.arm?
-                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-aarch64-apple-darwin.tar.gz"
-                sha256 "$SHA_AARCH64_APPLE"
-              else
-                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-x86_64-apple-darwin.tar.gz"
-                sha256 "$SHA_X86_64_APPLE"
-              end
+              url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-aarch64-apple-darwin.tar.gz"
+              sha256 "$SHA_AARCH64_APPLE"
             end
 
             on_linux do
@@ -137,7 +129,6 @@ jobs:
           # Substitute placeholders
           sed -i "s|\$VERSION|${{ steps.version.outputs.tag }}|g" homebrew-tap/Formula/elisym.rb
           sed -i "s|\$SHA_AARCH64_APPLE|${{ steps.sha.outputs.aarch64_apple }}|g" homebrew-tap/Formula/elisym.rb
-          sed -i "s|\$SHA_X86_64_APPLE|${{ steps.sha.outputs.x86_64_apple }}|g" homebrew-tap/Formula/elisym.rb
           sed -i "s|\$SHA_X86_64_LINUX|${{ steps.sha.outputs.x86_64_linux }}|g" homebrew-tap/Formula/elisym.rb
 
       - name: Push formula
