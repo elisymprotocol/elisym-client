@@ -2,9 +2,11 @@ mod agent;
 mod banner;
 mod cli;
 mod config;
+mod customer;
 mod dashboard;
 mod error;
 mod llm;
+mod protocol;
 
 use clap::Parser;
 use console::style;
@@ -21,12 +23,12 @@ use crate::error::{CliError, Result};
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(
-                    "info,nostr_relay_pool=off"
-                )),
-        )
+        .with_env_filter({
+            let base = tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+            // Always suppress noisy relay pool logs (connection retries, timeouts)
+            base.add_directive("nostr_relay_pool=off".parse().unwrap())
+        })
         .init();
 
     let cli = Cli::parse();
@@ -175,9 +177,57 @@ fn cmd_init() -> Result<()> {
 
     let llm_section = LlmSection {
         provider: provider.to_string(),
-        api_key,
-        model,
+        api_key: api_key.clone(),
+        model: model.clone(),
         max_tokens,
+    };
+
+    // Customer LLM configuration
+    let customer_llm_options = &[
+        "Use same as provider LLM (default)",
+        "Configure separately",
+    ];
+    let customer_llm_idx = Select::new()
+        .with_prompt("Customer LLM config")
+        .items(customer_llm_options)
+        .default(0)
+        .interact()?;
+
+    let customer_llm = if customer_llm_idx == 1 {
+        let cllm_providers = &["Anthropic (Claude)", "OpenAI (GPT)"];
+        let cllm_idx = Select::new()
+            .with_prompt("Customer LLM provider")
+            .items(cllm_providers)
+            .default(llm_idx)
+            .interact()?;
+        let (cprovider, cdefault_model) = match cllm_idx {
+            0 => ("anthropic", "claude-sonnet-4-20250514"),
+            _ => ("openai", "gpt-4o"),
+        };
+
+        let capi_key: String = Input::new()
+            .with_prompt(format!("{} API key", cllm_providers[cllm_idx]))
+            .default(api_key)
+            .interact_text()?;
+
+        let cmodel: String = Input::new()
+            .with_prompt("Model")
+            .default(if cllm_idx == llm_idx { model } else { cdefault_model.into() })
+            .interact_text()?;
+
+        let cmax_tokens: u32 = Input::new()
+            .with_prompt("Max tokens")
+            .default(max_tokens)
+            .interact_text()?;
+
+        Some(LlmSection {
+            provider: cprovider.to_string(),
+            api_key: capi_key,
+            model: cmodel,
+            max_tokens: cmax_tokens,
+        })
+    } else {
+        None
     };
 
     // Generate Nostr keypair
@@ -209,6 +259,7 @@ fn cmd_init() -> Result<()> {
             solana_secret_key,
         },
         llm: Some(llm_section),
+        customer_llm,
     };
 
     config::save_config(&cfg)?;
@@ -271,8 +322,30 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
         }
     }
 
+    // Mode selection
+    let mode_options = &["Provider (listen for jobs)", "Customer (send requests)"];
+    let mode_idx = Select::new()
+        .with_prompt("Start as")
+        .items(mode_options)
+        .default(0)
+        .interact()?;
+
     println!();
-    agent::run_agent(agent, &cfg, free).await?;
+
+    match mode_idx {
+        0 => {
+            agent::run_agent(agent, &cfg, free).await?;
+        }
+        _ => {
+            if free {
+                println!(
+                    "  {} --free flag is ignored in customer mode\n",
+                    style("!").yellow()
+                );
+            }
+            customer::run_customer_repl(agent, &cfg).await?;
+        }
+    }
 
     Ok(())
 }
@@ -359,6 +432,9 @@ fn cmd_status(name: &str) -> Result<()> {
         println!("  max tokens:   {}", llm.max_tokens);
     } else {
         println!("  llm:          {}", style("not configured").dim());
+    }
+    if let Some(ref cllm) = cfg.customer_llm {
+        println!("  customer llm: {} ({})", cllm.provider, cllm.model);
     }
     println!("  config:       {}", config::config_path(name)?.display());
 

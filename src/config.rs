@@ -15,6 +15,8 @@ pub struct AgentConfig {
     pub payment: PaymentSection,
     #[serde(default)]
     pub llm: Option<LlmSection>,
+    #[serde(default)]
+    pub customer_llm: Option<LlmSection>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

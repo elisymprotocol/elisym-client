@@ -2,15 +2,19 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use elisym_core::marketplace::JobRequest;
+use elisym_core::messaging::PrivateMessage;
 use elisym_core::types::JobStatus;
 use elisym_core::{
     AgentNode, AgentNodeBuilder,
     SolanaPaymentConfig, SolanaPaymentProvider, SolanaNetwork, SolanaToken,
     USDC_MINT_DEVNET, USDC_MINT_MAINNET,
 };
+use nostr_sdk::Timestamp;
 use solana_sdk::pubkey::Pubkey;
 use tokio::task::JoinSet;
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
+
+use crate::protocol::HeartbeatMessage;
 
 use crate::config::AgentConfig;
 use crate::error::{CliError, Result};
@@ -59,13 +63,24 @@ pub fn build_solana_provider(config: &AgentConfig) -> Result<SolanaPaymentProvid
 pub async fn build_agent(config: &AgentConfig) -> Result<AgentNode> {
     let provider = build_solana_provider(config)?;
 
-    let agent = AgentNodeBuilder::new(&config.name, &config.description)
+    let mut agent = AgentNodeBuilder::new(&config.name, &config.description)
         .capabilities(config.capabilities.clone())
         .relays(config.relays.clone())
         .supported_job_kinds(vec![5100])
         .secret_key(&config.secret_key)
         .solana_payment_provider(provider)
         .build()
+        .await?;
+
+    // Publish capability card with pricing metadata
+    agent.capability_card.metadata = Some(serde_json::json!({
+        "job_price": config.payment.job_price,
+        "token": config.payment.token,
+        "network": config.payment.network,
+    }));
+    agent
+        .discovery
+        .publish_capability(&agent.capability_card, &[5100])
         .await?;
 
     Ok(agent)
@@ -110,10 +125,28 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
         .subscribe_to_job_requests(&[100])
         .await?;
 
+    let mut messages_rx = agent.messaging.subscribe_to_messages().await?;
+    let started_at = Timestamp::now();
+
     let mut tasks: JoinSet<()> = JoinSet::new();
 
     loop {
         tokio::select! {
+            Some(msg) = messages_rx.recv() => {
+                // Skip messages from before this provider started
+                if msg.timestamp < started_at {
+                    trace!(
+                        sender = %msg.sender,
+                        msg_ts = %msg.timestamp,
+                        "ignoring old message (before startup)"
+                    );
+                    continue;
+                }
+                let agent = Arc::clone(&agent);
+                tokio::spawn(async move {
+                    handle_ping(&agent, msg).await;
+                });
+            }
             Some(job) = jobs_rx.recv() => {
                 info!(
                     job_id = %job.event_id,
@@ -186,8 +219,9 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
         }
     }
 
-    // Drop receiver first, then agent on blocking thread to avoid async drop issues
+    // Drop receivers first, then agent on blocking thread to avoid async drop issues
     drop(jobs_rx);
+    drop(messages_rx);
     let agent = Arc::try_unwrap(agent).ok();
     if let Some(agent) = agent {
         tokio::task::spawn_blocking(move || drop(agent)).await.ok();
@@ -465,4 +499,29 @@ async fn process_job_free(
         .await?;
 
     Err(err.into())
+}
+
+/// Handle an incoming private message: if it's a ping, respond with pong.
+async fn handle_ping(agent: &AgentNode, msg: PrivateMessage) {
+    let heartbeat: HeartbeatMessage = match serde_json::from_str(&msg.content) {
+        Ok(hb) => hb,
+        Err(_) => {
+            trace!(sender = %msg.sender, "ignoring non-heartbeat message");
+            return;
+        }
+    };
+
+    if heartbeat.is_ping() {
+        info!(sender = %msg.sender, nonce = %heartbeat.nonce, "received ping — sending pong");
+        let pong = HeartbeatMessage::pong(heartbeat.nonce);
+        if let Err(e) = agent
+            .messaging
+            .send_structured_message(&msg.sender, &pong)
+            .await
+        {
+            warn!(sender = %msg.sender, "failed to send pong: {}", e);
+        }
+    } else {
+        trace!(msg_type = %heartbeat.msg_type, sender = %msg.sender, "ignoring heartbeat message");
+    }
 }
