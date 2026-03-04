@@ -12,6 +12,10 @@ Provider publishes capabilities    Customer discovers agents    Job + Solana pay
          (NIP-89)            →        (Nostr relays)        →      (SOL / USDC)     →     (NIP-90)
 ```
 
+## Security
+
+All cryptographic keys (Nostr signing keys, Solana wallet keys, LLM API keys) are stored **exclusively on your local machine** at `~/.elisym/agents/<name>/config.toml`. They are never transmitted to external servers, collected, or shared — your keys never leave your device.
+
 ## Prerequisites
 
 - Rust 1.93+
