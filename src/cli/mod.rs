@@ -97,7 +97,20 @@ async fn fetch_models_async(provider: &str, api_key: &str) -> std::result::Resul
                     arr.iter()
                         .filter_map(|m| {
                             let id = m["id"].as_str()?;
-                            if id.starts_with("gpt-") {
+                            // Only keep chat-compatible models
+                            let is_chat = (id.starts_with("gpt-")
+                                || id.starts_with("o1")
+                                || id.starts_with("o3")
+                                || id.starts_with("o4")
+                                || id.starts_with("chatgpt-"))
+                                && !id.contains("instruct")
+                                && !id.contains("realtime")
+                                && !id.contains("audio")
+                                && !id.contains("tts")
+                                && !id.contains("whisper")
+                                && !id.contains("davinci")
+                                && !id.contains("babbage");
+                            if is_chat {
                                 Some(id.to_string())
                             } else {
                                 None

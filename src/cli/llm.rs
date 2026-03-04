@@ -84,13 +84,34 @@ impl LlmClient {
     }
 
     async fn complete_openai(&self, system_prompt: &str, user_input: &str) -> Result<String> {
-        let body = json!({
-            "model": self.model,
-            "max_tokens": self.max_tokens,
-            "messages": [
+        // o1/o3/o4 models require max_completion_tokens instead of max_tokens
+        // and use "developer" role instead of "system"
+        let is_reasoning = self.model.starts_with("o1")
+            || self.model.starts_with("o3")
+            || self.model.starts_with("o4");
+
+        let tokens_key = if is_reasoning {
+            "max_completion_tokens"
+        } else {
+            "max_tokens"
+        };
+
+        let messages = if is_reasoning {
+            json!([
+                { "role": "developer", "content": system_prompt },
+                { "role": "user", "content": user_input }
+            ])
+        } else {
+            json!([
                 { "role": "system", "content": system_prompt },
                 { "role": "user", "content": user_input }
-            ]
+            ])
+        };
+
+        let body = json!({
+            "model": self.model,
+            tokens_key: self.max_tokens,
+            "messages": messages
         });
 
         let resp = self
