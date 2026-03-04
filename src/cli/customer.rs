@@ -148,9 +148,10 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
     let mut feedback_rx = agent.marketplace.subscribe_to_feedback().await?;
 
     println!(
-        "  {} Ctrl+J for new line, Enter to send, paste supported\n",
+        "  {} Ctrl+J for new line, Enter to send, paste supported",
         style("~").dim(),
     );
+    println!("  {}\n", style("Describe what you need — your agent will find the best provider and handle payment.").dim());
 
     loop {
         // Prompt

@@ -152,6 +152,12 @@ pub async fn run() -> Result<()> {
 fn cmd_init() -> Result<()> {
     print!("{}", banner::BANNER);
     println!("  {}\n", style("Create a new agent").bold());
+    println!("  {}", style("Your agent is an AI that lives on the elisym network.").dim());
+    println!("  {}", style("It can earn SOL by completing tasks for other agents (provider),").dim());
+    println!("  {}", style("or pay other agents to do work for you (customer).").dim());
+    println!();
+    println!("  {}", style("Let's set it up step by step. Type \"back\" at any prompt to go back.").dim());
+    println!();
 
     // Wizard state
     let mut name = String::new();
@@ -169,6 +175,7 @@ fn cmd_init() -> Result<()> {
         match step {
             // Step 0: Agent name (no back — first step)
             0 => {
+                println!("  {}", style("A unique name for your agent (used in commands like `start my-agent`)").dim());
                 let input: String = Input::new()
                     .with_prompt("Agent name")
                     .interact_text()?;
@@ -193,6 +200,7 @@ fn cmd_init() -> Result<()> {
 
             // Step 1: Description
             1 => {
+                println!("  {}", style("What does your agent do? This is shown to other agents on the network.").dim());
                 let input: String = Input::new()
                     .with_prompt("Description (or \"back\")")
                     .default("An elisym AI agent".into())
@@ -209,6 +217,8 @@ fn cmd_init() -> Result<()> {
 
             // Step 2: Solana network
             2 => {
+                println!("  {}", style("Solana is used for payments between agents.").dim());
+                println!("  {}", style("Use devnet for testing (free SOL via airdrop). Switch to mainnet for real money.").dim());
                 let options = &["devnet (default)", "mainnet", "testnet", "\u{2190} Back"];
                 let idx = Select::new()
                     .with_prompt("Solana network")
@@ -231,6 +241,7 @@ fn cmd_init() -> Result<()> {
 
             // Step 3: RPC URL
             3 => {
+                println!("  {}", style("Solana RPC endpoint. The default works fine — change only if you have a custom node.").dim());
                 let default_rpc = match network.as_str() {
                     "mainnet" => "https://api.mainnet-beta.solana.com",
                     "testnet" => "https://api.testnet.solana.com",
@@ -252,6 +263,7 @@ fn cmd_init() -> Result<()> {
 
             // Step 4: Job price in SOL
             4 => {
+                println!("  {}", style("How much your agent charges per task (in SOL). On devnet 0.01 SOL is a good default.").dim());
                 let input: String = Input::new()
                     .with_prompt("Job price in SOL, e.g. 0.01 (or \"back\")")
                     .default("0.01".into())
@@ -275,6 +287,7 @@ fn cmd_init() -> Result<()> {
 
             // Step 5: LLM provider
             5 => {
+                println!("  {}", style("Your agent uses an LLM to process tasks. Pick a provider and enter your API key.").dim());
                 let options = &["Anthropic (Claude)", "OpenAI (GPT)", "\u{2190} Back"];
                 let idx = Select::new()
                     .with_prompt("LLM provider")
@@ -321,6 +334,7 @@ fn cmd_init() -> Result<()> {
 
             // Step 7: Model selection (fetched from API)
             7 => {
+                println!("  {}", style("Which model your agent will use. Faster models = lower cost, smarter models = better results.").dim());
                 let mut models = fetch_models(&provider, &api_key);
                 models.push("\u{2190} Back".to_string());
 
@@ -341,6 +355,7 @@ fn cmd_init() -> Result<()> {
 
             // Step 8: Max tokens
             8 => {
+                println!("  {}", style("Maximum length of each LLM response (in tokens). 4096 is good for most tasks.").dim());
                 let input: String = Input::new()
                     .with_prompt("Max tokens per LLM response (or \"back\")")
                     .default("4096".into())
@@ -424,7 +439,7 @@ fn cmd_init() -> Result<()> {
 
     if network != "mainnet" {
         println!(
-            "\n  Get devnet SOL: {}",
+            "\n  Run command to get devnet SOL: {}",
             style(format!("elisym-client airdrop {}", name)).cyan()
         );
     }
@@ -791,6 +806,12 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
     drop(solana);
 
     // Mode selection
+    println!("  {}", style("Provider — your agent listens for jobs from the network, completes tasks").dim());
+    println!("  {}", style("           using your LLM, and earns SOL for each completed job.").dim());
+    println!();
+    println!("  {}", style("Customer — you send requests to other agents on the network, they do the").dim());
+    println!("  {}", style("           work, and you pay them in SOL.").dim());
+    println!();
     let mode_options = &["Provider (listen for jobs)", "Customer (send requests)"];
     let mode_idx = Select::new()
         .with_prompt("Start as")
@@ -819,9 +840,15 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
                 }
             }
 
+            println!("  {}", style("Connecting to Nostr relays and publishing your capabilities...").dim());
+            println!();
             info!(agent = %name, "building agent node");
             let agent = agent::build_agent(&cfg).await?;
             info!(agent = %name, npub = %agent.identity.npub(), "agent node ready");
+            println!();
+            println!("  {}", style("Other agents will be able to discover and send jobs to you.").dim());
+            println!("  {}", style("Press Ctrl+C to stop.").dim());
+            println!();
             agent::run_agent(agent, &cfg, free).await?;
         }
         // Customer mode
