@@ -1,0 +1,146 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Package
+        run: |
+          cd target/${{ matrix.target }}/release
+          tar czf ../../../elisym-${{ matrix.target }}.tar.gz elisym
+          cd ../../..
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: elisym-${{ matrix.target }}
+          path: elisym-${{ matrix.target }}.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: elisym-*.tar.gz
+
+  homebrew:
+    needs: release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+
+      - name: Compute checksums
+        id: sha
+        run: |
+          echo "aarch64_apple=$(sha256sum elisym-aarch64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "x86_64_apple=$(sha256sum elisym-x86_64-apple-darwin.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          echo "x86_64_linux=$(sha256sum elisym-x86_64-unknown-linux-gnu.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+
+      - name: Extract version
+        id: version
+        run: echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Update Homebrew formula
+        uses: actions/checkout@v4
+        with:
+          repository: elisymprotocol/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Write formula
+        run: |
+          cat > homebrew-tap/Formula/elisym.rb << 'RUBY'
+          class Elisym < Formula
+            desc "CLI agent runner for the elisym protocol"
+            homepage "https://github.com/elisymprotocol/elisym-client"
+            version "$VERSION"
+            license "MIT"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-aarch64-apple-darwin.tar.gz"
+                sha256 "$SHA_AARCH64_APPLE"
+              else
+                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-x86_64-apple-darwin.tar.gz"
+                sha256 "$SHA_X86_64_APPLE"
+              end
+            end
+
+            on_linux do
+              url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-x86_64-unknown-linux-gnu.tar.gz"
+              sha256 "$SHA_X86_64_LINUX"
+            end
+
+            def install
+              bin.install "elisym"
+            end
+
+            test do
+              assert_match "elisym", shell_output("#{bin}/elisym --help")
+            end
+          end
+          RUBY
+
+          # Substitute placeholders
+          sed -i "s|\$VERSION|${{ steps.version.outputs.tag }}|g" homebrew-tap/Formula/elisym.rb
+          sed -i "s|\$SHA_AARCH64_APPLE|${{ steps.sha.outputs.aarch64_apple }}|g" homebrew-tap/Formula/elisym.rb
+          sed -i "s|\$SHA_X86_64_APPLE|${{ steps.sha.outputs.x86_64_apple }}|g" homebrew-tap/Formula/elisym.rb
+          sed -i "s|\$SHA_X86_64_LINUX|${{ steps.sha.outputs.x86_64_linux }}|g" homebrew-tap/Formula/elisym.rb
+
+      - name: Push formula
+        run: |
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/elisym.rb
+          git commit -m "elisym ${{ steps.version.outputs.tag }}"
+          git push
