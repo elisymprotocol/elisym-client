@@ -36,6 +36,12 @@ pub enum Commands {
         name: String,
     },
 
+    /// Edit agent configuration
+    Config {
+        /// Agent name
+        name: String,
+    },
+
     /// Show Solana wallet info (address, balance)
     Wallet {
         /// Agent name

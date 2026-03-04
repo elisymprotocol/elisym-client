@@ -20,6 +20,98 @@ use crate::cli::{Cli, Commands};
 use crate::config::{AgentConfig, LlmSection, PaymentSection};
 use crate::error::{CliError, Result};
 
+// ── model fetching ───────────────────────────────────────────────────
+
+/// Fetch available models from the provider API, with hardcoded fallback.
+fn fetch_models(provider: &str, api_key: &str) -> Vec<String> {
+    println!("  {} Fetching models...", style("~").dim());
+
+    let result = tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(fetch_models_async(provider, api_key))
+    });
+
+    match result {
+        Ok(models) if !models.is_empty() => models,
+        Ok(_) => {
+            println!("  {} No models returned, using defaults.", style("!").yellow());
+            fallback_models(provider)
+        }
+        Err(e) => {
+            println!("  {} Could not fetch models: {}", style("!").yellow(), e);
+            fallback_models(provider)
+        }
+    }
+}
+
+fn fallback_models(provider: &str) -> Vec<String> {
+    match provider {
+        "anthropic" => vec![
+            "claude-sonnet-4-20250514".into(),
+            "claude-haiku-4-5-20251001".into(),
+            "claude-opus-4-20250514".into(),
+        ],
+        _ => vec!["gpt-4o".into(), "gpt-4o-mini".into(), "gpt-4-turbo".into()],
+    }
+}
+
+async fn fetch_models_async(provider: &str, api_key: &str) -> std::result::Result<Vec<String>, reqwest::Error> {
+    let client = reqwest::Client::new();
+
+    match provider {
+        "anthropic" => {
+            let resp: serde_json::Value = client
+                .get("https://api.anthropic.com/v1/models")
+                .header("anthropic-version", "2023-06-01")
+                .header("x-api-key", api_key)
+                .query(&[("limit", "1000")])
+                .send()
+                .await?
+                .json()
+                .await?;
+
+            let mut models: Vec<String> = resp["data"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| Some(m["id"].as_str()?.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            models.sort();
+            Ok(models)
+        }
+        "openai" => {
+            let resp: serde_json::Value = client
+                .get("https://api.openai.com/v1/models")
+                .header("Authorization", format!("Bearer {}", api_key))
+                .send()
+                .await?
+                .json()
+                .await?;
+
+            let mut models: Vec<String> = resp["data"]
+                .as_array()
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|m| {
+                            let id = m["id"].as_str()?;
+                            if id.starts_with("gpt-") {
+                                Some(id.to_string())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            models.sort();
+            models.dedup();
+            Ok(models)
+        }
+        _ => Ok(vec![]),
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -39,6 +131,7 @@ async fn main() -> Result<()> {
         Some(Commands::List) => cmd_list()?,
         Some(Commands::Status { name }) => cmd_status(&name)?,
         Some(Commands::Delete { name }) => cmd_delete(&name)?,
+        Some(Commands::Config { name }) => cmd_config(&name)?,
         Some(Commands::Wallet { name }) => cmd_wallet(&name)?,
         Some(Commands::Airdrop { name, amount }) => cmd_airdrop(&name, amount)?,
         Some(Commands::Send { name, address, amount }) => cmd_send(&name, &address, amount)?,
@@ -59,176 +152,219 @@ fn cmd_init() -> Result<()> {
     print!("{}", banner::BANNER);
     println!("  {}\n", style("Create a new agent").bold());
 
-    let name: String = Input::new()
-        .with_prompt("Agent name")
-        .interact_text()?;
+    // Wizard state
+    let mut name = String::new();
+    let mut description = String::new();
+    let mut network = String::new();
+    let mut rpc_url_opt: Option<String> = None;
+    let mut job_price: u64 = 0;
+    let mut provider = String::new();
+    let mut api_key = String::new();
+    let mut model = String::new();
+    let mut max_tokens: u32 = 4096;
 
-    if name.is_empty() {
-        return Err(CliError::Other("name cannot be empty".into()));
+    let mut step: usize = 0;
+    loop {
+        match step {
+            // Step 0: Agent name (no back — first step)
+            0 => {
+                let input: String = Input::new()
+                    .with_prompt("Agent name")
+                    .interact_text()?;
+
+                if input.is_empty() {
+                    println!("  {} Name cannot be empty.", style("!").yellow());
+                    continue;
+                }
+
+                if config::config_path(&input)?.exists() {
+                    println!(
+                        "  {} Agent '{}' already exists. Choose a different name.",
+                        style("!").yellow(),
+                        style(&input).cyan()
+                    );
+                    continue;
+                }
+
+                name = input;
+                step += 1;
+            }
+
+            // Step 1: Description
+            1 => {
+                let input: String = Input::new()
+                    .with_prompt("Description (or \"back\")")
+                    .default("An elisym AI agent".into())
+                    .interact_text()?;
+
+                if input.eq_ignore_ascii_case("back") {
+                    step -= 1;
+                    continue;
+                }
+
+                description = input;
+                step += 1;
+            }
+
+            // Step 2: Solana network
+            2 => {
+                let options = &["devnet (default)", "mainnet", "testnet", "\u{2190} Back"];
+                let idx = Select::new()
+                    .with_prompt("Solana network")
+                    .items(options)
+                    .default(0)
+                    .interact()?;
+
+                if idx == 3 {
+                    step -= 1;
+                    continue;
+                }
+
+                network = match idx {
+                    1 => "mainnet".to_string(),
+                    2 => "testnet".to_string(),
+                    _ => "devnet".to_string(),
+                };
+                step += 1;
+            }
+
+            // Step 3: RPC URL
+            3 => {
+                let default_rpc = match network.as_str() {
+                    "mainnet" => "https://api.mainnet-beta.solana.com",
+                    "testnet" => "https://api.testnet.solana.com",
+                    _ => "https://api.devnet.solana.com",
+                };
+                let input: String = Input::new()
+                    .with_prompt("RPC URL (or \"back\")")
+                    .default(default_rpc.into())
+                    .interact_text()?;
+
+                if input.eq_ignore_ascii_case("back") {
+                    step -= 1;
+                    continue;
+                }
+
+                rpc_url_opt = if input == default_rpc { None } else { Some(input) };
+                step += 1;
+            }
+
+            // Step 4: Job price in SOL
+            4 => {
+                let input: String = Input::new()
+                    .with_prompt("Job price in SOL, e.g. 0.01 (or \"back\")")
+                    .default("0.01".into())
+                    .interact_text()?;
+
+                if input.eq_ignore_ascii_case("back") {
+                    step -= 1;
+                    continue;
+                }
+
+                match input.parse::<f64>() {
+                    Ok(sol) if sol >= 0.0 => {
+                        job_price = (sol * 1_000_000_000.0) as u64;
+                        step += 1;
+                    }
+                    _ => {
+                        println!("  {} Invalid amount. Enter a number like 0.01", style("!").yellow());
+                    }
+                }
+            }
+
+            // Step 5: LLM provider
+            5 => {
+                let options = &["Anthropic (Claude)", "OpenAI (GPT)", "\u{2190} Back"];
+                let idx = Select::new()
+                    .with_prompt("LLM provider")
+                    .items(options)
+                    .default(0)
+                    .interact()?;
+
+                if idx == 2 {
+                    step -= 1;
+                    continue;
+                }
+
+                provider = match idx {
+                    0 => "anthropic".to_string(),
+                    _ => "openai".to_string(),
+                };
+                step += 1;
+            }
+
+            // Step 6: API key
+            6 => {
+                let label = if provider == "anthropic" {
+                    "Anthropic (Claude)"
+                } else {
+                    "OpenAI (GPT)"
+                };
+                let input: String = Input::new()
+                    .with_prompt(format!("{} API key (or \"back\")", label))
+                    .interact_text()?;
+
+                if input.eq_ignore_ascii_case("back") {
+                    step -= 1;
+                    continue;
+                }
+
+                if input.is_empty() {
+                    println!("  {} API key cannot be empty.", style("!").yellow());
+                    continue;
+                }
+
+                api_key = input;
+                step += 1;
+            }
+
+            // Step 7: Model selection (fetched from API)
+            7 => {
+                let mut models = fetch_models(&provider, &api_key);
+                models.push("\u{2190} Back".to_string());
+
+                let idx = Select::new()
+                    .with_prompt("Model")
+                    .items(&models)
+                    .default(0)
+                    .interact()?;
+
+                if idx == models.len() - 1 {
+                    step -= 1;
+                    continue;
+                }
+
+                model = models[idx].clone();
+                step += 1;
+            }
+
+            // Step 8: Max tokens
+            8 => {
+                let input: String = Input::new()
+                    .with_prompt("Max tokens per LLM response (or \"back\")")
+                    .default("4096".into())
+                    .interact_text()?;
+
+                if input.eq_ignore_ascii_case("back") {
+                    step -= 1;
+                    continue;
+                }
+
+                match input.parse::<u32>() {
+                    Ok(val) if val > 0 => {
+                        max_tokens = val;
+                        step += 1;
+                    }
+                    _ => {
+                        println!("  {} Invalid number.", style("!").yellow());
+                    }
+                }
+            }
+
+            // Done — build config
+            _ => break,
+        }
     }
-
-    // Check if agent already exists
-    if config::config_path(&name)?.exists() {
-        return Err(CliError::Other(format!("agent '{}' already exists", name)));
-    }
-
-    let description: String = Input::new()
-        .with_prompt("Description")
-        .default("An elisym AI agent".into())
-        .interact_text()?;
-
-    let cap_options = &[
-        "summarization",
-        "translation",
-        "code-generation",
-        "image-generation",
-        "data-analysis",
-        "research",
-    ];
-    let cap_selections = MultiSelect::new()
-        .with_prompt("Capabilities (space to select, enter to confirm)")
-        .items(cap_options)
-        .interact()?;
-    let capabilities: Vec<String> = if cap_selections.is_empty() {
-        vec!["general".to_string()]
-    } else {
-        cap_selections.iter().map(|&i| cap_options[i].to_string()).collect()
-    };
-
-    // Solana network
-    let network_options = &["devnet (default)", "mainnet", "testnet"];
-    let network_idx = Select::new()
-        .with_prompt("Solana network")
-        .items(network_options)
-        .default(0)
-        .interact()?;
-    let network = match network_idx {
-        1 => "mainnet".to_string(),
-        2 => "testnet".to_string(),
-        _ => "devnet".to_string(),
-    };
-
-    // RPC URL
-    let default_rpc = match network.as_str() {
-        "mainnet" => "https://api.mainnet-beta.solana.com",
-        "testnet" => "https://api.testnet.solana.com",
-        _ => "https://api.devnet.solana.com",
-    };
-    let rpc_url: String = Input::new()
-        .with_prompt("RPC URL")
-        .default(default_rpc.into())
-        .interact_text()?;
-    let rpc_url_opt = if rpc_url == default_rpc {
-        None
-    } else {
-        Some(rpc_url)
-    };
-
-    // Token
-    let token_options = &["SOL (native)", "USDC (SPL)"];
-    let token_idx = Select::new()
-        .with_prompt("Payment token")
-        .items(token_options)
-        .default(0)
-        .interact()?;
-    let token = match token_idx {
-        1 => "usdc".to_string(),
-        _ => "sol".to_string(),
-    };
-
-    // Job price
-    let (default_price, price_label) = match token.as_str() {
-        "usdc" => (10_000u64, "Job price (USDC base units, 10000 = 0.01 USDC)"),
-        _ => (10_000_000u64, "Job price (lamports, 10000000 = 0.01 SOL)"),
-    };
-    let job_price: u64 = Input::new()
-        .with_prompt(price_label)
-        .default(default_price)
-        .interact_text()?;
-
-    // LLM provider configuration
-    let llm_providers = &["Anthropic (Claude)", "OpenAI (GPT)"];
-    let llm_idx = Select::new()
-        .with_prompt("LLM provider")
-        .items(llm_providers)
-        .default(0)
-        .interact()?;
-    let (provider, default_model) = match llm_idx {
-        0 => ("anthropic", "claude-sonnet-4-20250514"),
-        _ => ("openai", "gpt-4o"),
-    };
-
-    let api_key: String = Input::new()
-        .with_prompt(format!("{} API key", llm_providers[llm_idx]))
-        .interact_text()?;
-    if api_key.is_empty() {
-        return Err(CliError::Other("API key cannot be empty".into()));
-    }
-
-    let model: String = Input::new()
-        .with_prompt("Model")
-        .default(default_model.into())
-        .interact_text()?;
-
-    let max_tokens: u32 = Input::new()
-        .with_prompt("Max tokens")
-        .default(4096)
-        .interact_text()?;
-
-    let llm_section = LlmSection {
-        provider: provider.to_string(),
-        api_key: api_key.clone(),
-        model: model.clone(),
-        max_tokens,
-    };
-
-    // Customer LLM configuration
-    let customer_llm_options = &[
-        "Use same as provider LLM (default)",
-        "Configure separately",
-    ];
-    let customer_llm_idx = Select::new()
-        .with_prompt("Customer LLM config")
-        .items(customer_llm_options)
-        .default(0)
-        .interact()?;
-
-    let customer_llm = if customer_llm_idx == 1 {
-        let cllm_providers = &["Anthropic (Claude)", "OpenAI (GPT)"];
-        let cllm_idx = Select::new()
-            .with_prompt("Customer LLM provider")
-            .items(cllm_providers)
-            .default(llm_idx)
-            .interact()?;
-        let (cprovider, cdefault_model) = match cllm_idx {
-            0 => ("anthropic", "claude-sonnet-4-20250514"),
-            _ => ("openai", "gpt-4o"),
-        };
-
-        let capi_key: String = Input::new()
-            .with_prompt(format!("{} API key", cllm_providers[cllm_idx]))
-            .default(api_key)
-            .interact_text()?;
-
-        let cmodel: String = Input::new()
-            .with_prompt("Model")
-            .default(if cllm_idx == llm_idx { model } else { cdefault_model.into() })
-            .interact_text()?;
-
-        let cmax_tokens: u32 = Input::new()
-            .with_prompt("Max tokens")
-            .default(max_tokens)
-            .interact_text()?;
-
-        Some(LlmSection {
-            provider: cprovider.to_string(),
-            api_key: capi_key,
-            model: cmodel,
-            max_tokens: cmax_tokens,
-        })
-    } else {
-        None
-    };
 
     // Generate Nostr keypair
     let keys = Keys::generate();
@@ -239,10 +375,17 @@ fn cmd_init() -> Result<()> {
     let solana_secret_key = bs58::encode(solana_keypair.to_bytes()).into_string();
     let solana_address = solana_keypair.pubkey().to_string();
 
+    let llm_section = LlmSection {
+        provider: provider.clone(),
+        api_key,
+        model,
+        max_tokens,
+    };
+
     let cfg = AgentConfig {
         name: name.clone(),
         description,
-        capabilities,
+        capabilities: vec!["general".to_string()],
         relays: vec![
             "wss://relay.damus.io".into(),
             "wss://nos.lol".into(),
@@ -253,13 +396,13 @@ fn cmd_init() -> Result<()> {
             chain: "solana".to_string(),
             network: network.clone(),
             rpc_url: rpc_url_opt,
-            token: token.clone(),
+            token: "sol".to_string(),
             job_price,
             payment_timeout_secs: 120,
             solana_secret_key,
         },
         llm: Some(llm_section),
-        customer_llm,
+        customer_llm: None,
     };
 
     config::save_config(&cfg)?;
@@ -268,7 +411,12 @@ fn cmd_init() -> Result<()> {
     println!("\n  {} Agent '{}' created!", style("*").green(), style(&name).cyan());
     println!("  npub:    {}", style(&npub).dim());
     println!("  wallet:  {}", style(&solana_address).dim());
-    println!("  network: {} ({})", style(&network).dim(), style(&token).dim());
+    println!("  network: {}", style(&network).dim());
+    println!(
+        "  price:   {} SOL ({} lamports)",
+        style(format_sol(job_price)).dim(),
+        style(job_price).dim()
+    );
     println!("  config:  {}", style(config::config_path(&name)?.display()).dim());
 
     if network != "mainnet" {
@@ -280,6 +428,164 @@ fn cmd_init() -> Result<()> {
     println!("  Start agent:    {}\n", style(format!("elisym-cli start {}", name)).cyan());
 
     Ok(())
+}
+
+// ── config ────────────────────────────────────────────────────────────
+
+fn cmd_config(name: &str) -> Result<()> {
+    let mut cfg = config::load_config(name)?;
+
+    println!("{}\n", style(format!("Configure agent: {}", name)).bold());
+
+    loop {
+        let main_options = &["Provider settings", "Customer settings", "Done"];
+        let main_idx = Select::new()
+            .with_prompt("Settings")
+            .items(main_options)
+            .default(0)
+            .interact()?;
+
+        match main_idx {
+            // Provider settings
+            0 => {
+                loop {
+                    let sub_options = &["Capabilities", "LLM provider", "\u{2190} Back"];
+                    let sub_idx = Select::new()
+                        .with_prompt("Provider settings")
+                        .items(sub_options)
+                        .default(0)
+                        .interact()?;
+
+                    match sub_idx {
+                        // Capabilities
+                        0 => {
+                            let cap_options = &[
+                                "summarization",
+                                "translation",
+                                "code-generation",
+                                "image-generation",
+                                "data-analysis",
+                                "research",
+                            ];
+                            // Pre-select current capabilities
+                            let defaults: Vec<bool> = cap_options
+                                .iter()
+                                .map(|c| cfg.capabilities.contains(&c.to_string()))
+                                .collect();
+                            let selections = MultiSelect::new()
+                                .with_prompt("Capabilities (space to select, enter to confirm)")
+                                .items(cap_options)
+                                .defaults(&defaults)
+                                .interact()?;
+                            cfg.capabilities = if selections.is_empty() {
+                                vec!["general".to_string()]
+                            } else {
+                                selections.iter().map(|&i| cap_options[i].to_string()).collect()
+                            };
+                            println!(
+                                "  {} Capabilities: {}",
+                                style("*").green(),
+                                cfg.capabilities.join(", ")
+                            );
+                        }
+                        // LLM provider
+                        1 => {
+                            if let Some(llm) = prompt_llm_section()? {
+                                cfg.llm = Some(llm);
+                                println!("  {} Provider LLM updated.", style("*").green());
+                            }
+                        }
+                        // Back
+                        _ => break,
+                    }
+                }
+            }
+            // Customer settings
+            1 => {
+                loop {
+                    let sub_options = &["LLM provider", "\u{2190} Back"];
+                    let sub_idx = Select::new()
+                        .with_prompt("Customer settings")
+                        .items(sub_options)
+                        .default(0)
+                        .interact()?;
+
+                    match sub_idx {
+                        0 => {
+                            if let Some(llm) = prompt_llm_section()? {
+                                cfg.customer_llm = Some(llm);
+                                println!("  {} Customer LLM updated.", style("*").green());
+                            }
+                        }
+                        _ => break,
+                    }
+                }
+            }
+            // Done
+            _ => break,
+        }
+    }
+
+    config::save_config(&cfg)?;
+    println!(
+        "\n  {} Configuration saved for '{}'.",
+        style("*").green(),
+        style(name).cyan()
+    );
+
+    Ok(())
+}
+
+/// Shared LLM configuration flow used by both init and config commands.
+/// Returns None if the user backs out at the first prompt.
+fn prompt_llm_section() -> Result<Option<LlmSection>> {
+    // Provider
+    let provider_options = &["Anthropic (Claude)", "OpenAI (GPT)", "\u{2190} Back"];
+    let provider_idx = Select::new()
+        .with_prompt("LLM provider")
+        .items(provider_options)
+        .default(0)
+        .interact()?;
+
+    if provider_idx == 2 {
+        return Ok(None);
+    }
+
+    let provider = match provider_idx {
+        0 => "anthropic",
+        _ => "openai",
+    };
+
+    // API key
+    let label = provider_options[provider_idx];
+    let api_key: String = Input::new()
+        .with_prompt(format!("{} API key", label))
+        .interact_text()?;
+    if api_key.is_empty() {
+        println!("  {} API key cannot be empty.", style("!").yellow());
+        return Ok(None);
+    }
+
+    // Model (fetched from API)
+    let models = fetch_models(provider, &api_key);
+    let model_idx = Select::new()
+        .with_prompt("Model")
+        .items(&models)
+        .default(0)
+        .interact()?;
+
+    // Max tokens
+    let max_tokens: u32 = Input::new()
+        .with_prompt("Max tokens per LLM response")
+        .default(4096)
+        .interact_text()?;
+
+    Ok(Some(LlmSection {
+        provider: provider.to_string(),
+        api_key,
+        model: models[model_idx].to_string(),
+        max_tokens,
+    }))
 }
 
 // ── start ─────────────────────────────────────────────────────────────
@@ -418,11 +724,19 @@ fn cmd_status(name: &str) -> Result<()> {
     println!("  chain:        {}", cfg.payment.chain);
     println!("  network:      {}", cfg.payment.network);
     println!("  token:        {}", cfg.payment.token);
-    println!(
-        "  job price:    {} {}",
-        cfg.payment.job_price,
-        if cfg.payment.token == "sol" { "lamports" } else { "base units" }
-    );
+    if cfg.payment.token == "sol" {
+        println!(
+            "  job price:    {} SOL ({} lamports)",
+            format_sol(cfg.payment.job_price),
+            cfg.payment.job_price
+        );
+    } else {
+        println!(
+            "  job price:    {} USDC ({} base units)",
+            format_usdc(cfg.payment.job_price),
+            cfg.payment.job_price
+        );
+    }
     if let Some(addr) = cfg.payment.solana_address() {
         println!("  wallet:       {}", addr);
     }

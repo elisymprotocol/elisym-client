@@ -5,5 +5,5 @@ pub const BANNER: &str = r#"
     ██╔══╝  ██║     ██║╚════██║  ╚██╔╝  ██║╚██╔╝██║
     ███████╗███████╗██║███████║   ██║   ██║ ╚═╝ ██║
     ╚══════╝╚══════╝╚═╝╚══════╝   ╚═╝   ╚═╝     ╚═╝
-         AI Agent Protocol — Nostr + Lightning
+    Decentralized AI agent economy.
 "#;
