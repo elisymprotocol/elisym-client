@@ -1,14 +1,14 @@
 use std::io;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{self, Event as CEvent, KeyCode, KeyEvent, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use std::collections::HashSet;
-use nostr_sdk::{Filter, Kind, RelayPoolNotification, ToBech32};
+use std::collections::{HashMap, HashSet};
+use nostr_sdk::{Filter, Kind, ToBech32};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -37,7 +37,6 @@ struct AgentEntry {
     network: String,
     solana_address: Option<String>,
     sol_balance: Option<u64>,
-    total_earned: u64,
     payment_address: Option<String>,
     metadata: Option<serde_json::Value>,
     supported_kinds: Vec<u16>,
@@ -62,6 +61,8 @@ struct DashboardState {
 
     // data
     discovered_agents: Vec<AgentEntry>,
+    earnings: HashMap<String, u64>, // npub -> total earned (independent of discovery)
+    last_update: Option<u64>,       // unix timestamp of last data update
 
     // navigation
     cursor: usize,
@@ -78,6 +79,8 @@ impl DashboardState {
             network,
             started_at: Instant::now(),
             discovered_agents: Vec::new(),
+            earnings: HashMap::new(),
+            last_update: None,
             cursor: 0,
             detail_open: false,
             detail_scroll: 0,
@@ -97,7 +100,27 @@ impl DashboardState {
     }
 
     fn total_earned(&self) -> u64 {
-        self.discovered_agents.iter().map(|a| a.total_earned).sum()
+        self.earnings.values().sum()
+    }
+
+    fn agent_earned(&self, npub: &str) -> u64 {
+        self.earnings.get(npub).copied().unwrap_or(0)
+    }
+
+    fn touch_update(&mut self) {
+        self.last_update = Some(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        );
+    }
+
+    fn last_update_str(&self) -> String {
+        match self.last_update {
+            Some(ts) => format_local_time(ts),
+            None => "syncing...".to_string(),
+        }
     }
 
     fn handle_event(&mut self, ev: DashboardEvent) {
@@ -120,17 +143,17 @@ impl DashboardState {
                 } else {
                     self.discovered_agents.push(entry);
                 }
+                self.touch_update();
             }
             DashboardEvent::JobResultSeen { provider_npub, amount } => {
-                if let Some(agent) = self
-                    .discovered_agents
-                    .iter_mut()
-                    .find(|a| a.pubkey == provider_npub)
-                {
-                    agent.total_earned += amount;
-                }
+                *self.earnings.entry(provider_npub).or_insert(0) += amount;
                 // Sort: highest earned first
-                self.discovered_agents.sort_by(|a, b| b.total_earned.cmp(&a.total_earned));
+                self.discovered_agents.sort_by(|a, b| {
+                    let ea = self.earnings.get(&a.pubkey).copied().unwrap_or(0);
+                    let eb = self.earnings.get(&b.pubkey).copied().unwrap_or(0);
+                    eb.cmp(&ea)
+                });
+                self.touch_update();
             }
             DashboardEvent::BalanceUpdates(updates) => {
                 for (addr, balance) in updates {
@@ -142,6 +165,7 @@ impl DashboardState {
                         agent.sol_balance = Some(balance);
                     }
                 }
+                self.touch_update();
             }
             DashboardEvent::Error(_) => {}
         }
@@ -285,6 +309,11 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
             format!("{} {}", spinner[spin_idx], state.uptime_str()),
             Style::default().fg(Color::Green),
         ),
+        Span::styled("  ", Style::default()),
+        Span::styled(
+            format!("updated: {}", state.last_update_str()),
+            Style::default().fg(Color::DarkGray),
+        ),
     ]);
     frame.render_widget(Paragraph::new(line), area);
 }
@@ -348,8 +377,9 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
             } else {
                 format!("{:.4} SOL", a.price as f64 / 1e9)
             };
-            let earned_str = if a.total_earned > 0 {
-                format!("{:.4}", a.total_earned as f64 / 1e9)
+            let agent_earned = state.agent_earned(&a.pubkey);
+            let earned_str = if agent_earned > 0 {
+                format!("{:.4}", agent_earned as f64 / 1e9)
             } else {
                 "—".to_string()
             };
@@ -371,7 +401,7 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
             };
 
             // Earned column with color based on amount
-            let earned_cell = if a.total_earned > 0 {
+            let earned_cell = if agent_earned > 0 {
                 Cell::from(earned_str).style(Style::default().fg(Color::Green))
             } else {
                 Cell::from(earned_str).style(Style::default().fg(Color::DarkGray))
@@ -498,11 +528,12 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
     }
 
     // Total Earned
-    if agent.total_earned > 0 {
+    let agent_earned = state.agent_earned(&agent.pubkey);
+    if agent_earned > 0 {
         lines.push(Line::from(vec![
             Span::styled("  Total Earned  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{:.9} SOL", agent.total_earned as f64 / 1e9),
+                format!("{:.9} SOL", agent_earned as f64 / 1e9),
                 Style::default().fg(Color::Yellow).bold(),
             ),
         ]));
@@ -680,7 +711,6 @@ fn spawn_discovery(
                             network: agent_network,
                             solana_address: a.card.payment_address.clone(),
                             sol_balance: None,
-                            total_earned: 0,
                             payment_address: a.card.payment_address.clone(),
                             metadata: a.card.metadata.clone(),
                             supported_kinds: a.supported_kinds.clone(),
@@ -753,29 +783,27 @@ fn spawn_job_results(
     tx: mpsc::Sender<DashboardEvent>,
 ) {
     tokio::spawn(async move {
-        // Subscribe to all kind 6100 events (job results for offset 100) — no #p filter
-        // No `since` filter — fetch historical results too
         let result_kind = Kind::from(elisym_core::KIND_JOB_RESULT_BASE + 100);
-        let filter = Filter::new()
-            .kind(result_kind);
-
-        if agent.client.subscribe(vec![filter], None).await.is_err() {
-            return;
-        }
-
-        let mut notifications = agent.client.notifications();
         let mut seen = HashSet::new();
-        while let Ok(notification) = notifications.recv().await {
-            if let RelayPoolNotification::Event { event, .. } = notification {
-                // Deduplicate across relays
-                if !seen.insert(event.id) {
-                    continue;
-                }
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
 
-                let kind_num = event.kind.as_u16();
-                if !(elisym_core::KIND_JOB_RESULT_BASE..elisym_core::KIND_JOB_FEEDBACK)
-                    .contains(&kind_num)
-                {
+        loop {
+            interval.tick().await;
+
+            // One-shot fetch — same reliable method as discovery uses
+            let filter = Filter::new().kind(result_kind);
+            let events = match agent
+                .client
+                .fetch_events(vec![filter], Some(Duration::from_secs(10)))
+                .await
+            {
+                Ok(events) => events,
+                Err(_) => continue,
+            };
+
+            for event in events {
+                // Deduplicate
+                if !seen.insert(event.id) {
                     continue;
                 }
 
@@ -791,7 +819,7 @@ fn spawn_job_results(
 
                 let amount = match amount {
                     Some(a) => a,
-                    None => continue, // skip results without amount
+                    None => continue,
                 };
 
                 let provider_npub = event.pubkey.to_bech32().unwrap_or_default();
@@ -804,7 +832,7 @@ fn spawn_job_results(
                     .await
                     .is_err()
                 {
-                    break;
+                    return;
                 }
             }
         }
@@ -926,4 +954,27 @@ fn extract_price(agent: &elisym_core::DiscoveredAgent) -> (u64, String) {
     } else {
         (0, "sol".to_string())
     }
+}
+
+/// Format a unix timestamp as local time HH:MM:SS
+fn format_local_time(unix_ts: u64) -> String {
+    // Get local timezone offset using the difference between now() and UNIX_EPOCH
+    let now_sys = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Approximate local offset: compare system time with a known reference
+    // For simplicity, just display UTC time with the system's offset baked in
+    // since std doesn't expose timezone. We use libc-free approach:
+    // the timestamp IS already in UTC, we just show it as HH:MM:SS
+    let secs_of_day = unix_ts % 86400;
+    let h = secs_of_day / 3600;
+    let m = (secs_of_day % 3600) / 60;
+    let s = secs_of_day % 60;
+
+    // Suppress unused warning
+    let _ = now_sys;
+
+    format!("{:02}:{:02}:{:02} UTC", h, m, s)
 }
