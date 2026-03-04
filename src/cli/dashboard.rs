@@ -351,7 +351,7 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
         "Pubkey",
         "Capabilities",
         "Price",
-        "Earned",
+        "Earned SOL",
     ])
     .style(Style::default().bold().fg(Color::Cyan))
     .bottom_margin(1);
@@ -387,17 +387,15 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
 
             let style = if i == state.cursor {
                 Style::default()
-                    .bg(Color::Rgb(30, 60, 80))
+                    .bg(Color::Blue)
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
+            } else if i % 2 == 1 {
+                Style::default()
+                    .bg(Color::Indexed(235)) // 256-color dark gray, falls back gracefully
+                    .fg(Color::White)
             } else {
-                // Subtle alternating row colors
-                let bg = if i % 2 == 0 {
-                    Color::Reset
-                } else {
-                    Color::Rgb(20, 20, 30)
-                };
-                Style::default().bg(bg).fg(Color::White)
+                Style::default().fg(Color::White)
             };
 
             // Earned column with color based on amount
