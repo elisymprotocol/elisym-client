@@ -14,11 +14,11 @@ use solana_sdk::pubkey::Pubkey;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
-use crate::protocol::HeartbeatMessage;
+use super::protocol::HeartbeatMessage;
 
-use crate::config::AgentConfig;
-use crate::error::{CliError, Result};
-use crate::llm::LlmClient;
+use super::config::AgentConfig;
+use super::error::{CliError, Result};
+use super::llm::LlmClient;
 
 /// Build a SolanaPaymentProvider directly from config (no relay connections needed).
 /// Use this for wallet-only operations: send, airdrop, balance checks.

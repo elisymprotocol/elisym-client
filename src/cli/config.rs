@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::error::{CliError, Result};
+use super::error::{CliError, Result};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AgentConfig {

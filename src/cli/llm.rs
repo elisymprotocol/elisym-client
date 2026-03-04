@@ -1,8 +1,8 @@
 use reqwest::Client;
 use serde_json::{json, Value};
 
-use crate::config::LlmSection;
-use crate::error::{CliError, Result};
+use super::config::LlmSection;
+use super::error::{CliError, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LlmProvider {

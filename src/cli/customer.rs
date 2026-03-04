@@ -16,10 +16,10 @@ use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::config::AgentConfig;
-use crate::error::{CliError, Result};
-use crate::llm::LlmClient;
-use crate::protocol::{self, HeartbeatMessage};
+use super::config::AgentConfig;
+use super::error::{CliError, Result};
+use super::llm::LlmClient;
+use super::protocol::{self, HeartbeatMessage};
 
 enum RequestOutcome {
     Done,
