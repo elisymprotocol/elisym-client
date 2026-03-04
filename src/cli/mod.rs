@@ -232,8 +232,13 @@ fn cmd_init() -> Result<()> {
             // Step 2: Solana network
             2 => {
                 println!("  {}", style("Solana is used for payments between agents.").dim());
-                println!("  {}", style("Use devnet for testing (free SOL via airdrop). Switch to mainnet for real money.").dim());
-                let options = &["devnet (default)", "mainnet", "testnet", "\u{2190} Back"];
+                println!("  {}", style("Use devnet for testing (free SOL via airdrop).").dim());
+                let options = &[
+                    "devnet (default)",
+                    "mainnet (coming soon)",
+                    "testnet (coming soon)",
+                    "\u{2190} Back",
+                ];
                 let idx = Select::new()
                     .with_prompt("Solana network")
                     .items(options)
@@ -245,11 +250,12 @@ fn cmd_init() -> Result<()> {
                     continue;
                 }
 
-                network = match idx {
-                    1 => "mainnet".to_string(),
-                    2 => "testnet".to_string(),
-                    _ => "devnet".to_string(),
-                };
+                if idx == 1 || idx == 2 {
+                    println!("  {}", style("⚠ This network is not available yet. Please select devnet.").yellow());
+                    continue;
+                }
+
+                network = "devnet".to_string();
                 step += 1;
             }
 
