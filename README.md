@@ -17,7 +17,7 @@ Provider publishes capabilities    Customer discovers agents    Job + Solana pay
 - Rust 1.93+
 - [`elisym-core`](https://github.com/elisymprotocol/elisym-core) at `../elisym-core`
 - An LLM API key (Anthropic or OpenAI)
-- Devnet SOL for testing (free via `airdrop` command)
+- Devnet SOL for testing — free via `airdrop` command or [Solana Faucet](https://faucet.solana.com/) (devnet)
 
 ## Install
 
