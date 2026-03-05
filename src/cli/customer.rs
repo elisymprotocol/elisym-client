@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use console::style;
@@ -144,6 +146,36 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
         style("exit").dim(),
     );
 
+    // Show initial balance
+    if let Some(solana) = agent.solana_payments() {
+        if let Ok(balance) = solana.balance() {
+            println!(
+                "  {} Balance: {} SOL",
+                style("$").yellow(),
+                style(format!("{:.4}", balance as f64 / 1_000_000_000.0)).green(),
+            );
+        }
+    }
+
+    // Start background balance monitor
+    let balance_stop = Arc::new(AtomicBool::new(false));
+    let balance_handle = if let Some(solana) = agent.solana_payments() {
+        let initial = solana.balance().unwrap_or(0);
+        let last_balance = Arc::new(AtomicU64::new(initial));
+        let stop = Arc::clone(&balance_stop);
+        let rpc_url = config.payment.rpc_url.clone().unwrap_or_else(|| {
+            match config.payment.network.as_str() {
+                "devnet" => "https://api.devnet.solana.com",
+                "testnet" => "https://api.testnet.solana.com",
+                _ => "https://api.mainnet-beta.solana.com",
+            }.to_string()
+        });
+        let address = solana.address();
+        Some(tokio::spawn(balance_monitor(rpc_url, address, last_balance, stop)))
+    } else {
+        None
+    };
+
     // Subscribe to feedback once (reused across jobs)
     let mut feedback_rx = agent.marketplace.subscribe_to_feedback().await?;
 
@@ -192,6 +224,12 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
     }
 
     info!("customer REPL exited — shutting down agent");
+
+    // Stop balance monitor
+    balance_stop.store(true, Ordering::Relaxed);
+    if let Some(handle) = balance_handle {
+        let _ = handle.await;
+    }
 
     // Disconnect from relays first (stops background tasks), then drop.
     drop(feedback_rx);
@@ -844,6 +882,50 @@ fn extract_price(agent: &DiscoveredAgent) -> (u64, String) {
         (price, token)
     } else {
         (0, "sol".to_string())
+    }
+}
+
+/// Background task that polls SOL balance and prints updates when it changes.
+async fn balance_monitor(
+    rpc_url: String,
+    address: String,
+    last_balance: Arc<AtomicU64>,
+    stop: Arc<AtomicBool>,
+) {
+    use solana_sdk::pubkey::Pubkey;
+    use std::str::FromStr;
+
+    let rpc = solana_client::rpc_client::RpcClient::new(&rpc_url);
+    let pubkey = match Pubkey::from_str(&address) {
+        Ok(pk) => pk,
+        Err(_) => return,
+    };
+
+    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    loop {
+        interval.tick().await;
+        if stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if let Ok(balance) = rpc.get_balance(&pubkey) {
+            let prev = last_balance.swap(balance, Ordering::Relaxed);
+            if balance != prev {
+                let sol = balance as f64 / 1_000_000_000.0;
+                let diff = balance as i64 - prev as i64;
+                let diff_sol = diff as f64 / 1_000_000_000.0;
+                let sign = if diff > 0 { "+" } else { "" };
+                // Clear current line (may have prompt), print balance, reprint prompt
+                print!(
+                    "\r\x1b[2K  {} Balance: {} SOL ({}{})\r\n{} ",
+                    style("$").yellow(),
+                    style(format!("{:.4}", sol)).green(),
+                    sign,
+                    style(format!("{:.4}", diff_sol)).dim(),
+                    style(">>").cyan().bold(),
+                );
+                let _ = io::stdout().flush();
+            }
+        }
     }
 }
 

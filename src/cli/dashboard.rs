@@ -862,7 +862,7 @@ fn resolve_rpc_url(network: &str, rpc_url: Option<&str>) -> String {
     match network {
         "mainnet" => elisym_core::SolanaNetwork::Mainnet.rpc_url(),
         "testnet" => elisym_core::SolanaNetwork::Testnet.rpc_url(),
-        _ => elisym_core::SolanaNetwork::Devnet.rpc_url(),
+        _ => elisym_core::SolanaNetwork::Mainnet.rpc_url(),
     }
 }
 

@@ -54,7 +54,7 @@ impl Default for PaymentSection {
     fn default() -> Self {
         Self {
             chain: "solana".to_string(),
-            network: "devnet".to_string(),
+            network: "mainnet".to_string(),
             rpc_url: None,
             token: "sol".to_string(),
             job_price: 10_000_000, // 0.01 SOL in lamports

@@ -9,6 +9,9 @@ mod llm;
 mod protocol;
 
 use std::collections::HashMap;
+use std::io::Write as _;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
 use console::style;
@@ -21,6 +24,37 @@ use tracing::info;
 use self::args::{Cli, Commands};
 use self::config::{AgentConfig, LlmSection, PaymentSection};
 use self::error::{CliError, Result};
+
+/// Run an async operation with an animated spinner.
+async fn with_spinner<F, T>(message: &str, fut: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop_clone = Arc::clone(&stop);
+    let msg = message.to_string();
+
+    let handle = tokio::spawn(async move {
+        let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let mut i = 0;
+        loop {
+            if stop_clone.load(Ordering::Relaxed) {
+                print!("\r\x1b[2K  {} {}\n", style("⣿").green(), style("Connected.").dim());
+                let _ = std::io::stdout().flush();
+                break;
+            }
+            print!("\r\x1b[2K  {} {}", style(frames[i % frames.len()]).cyan(), style(&msg).dim());
+            let _ = std::io::stdout().flush();
+            i += 1;
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+        }
+    });
+
+    let result = fut.await;
+    stop.store(true, Ordering::Relaxed);
+    let _ = handle.await;
+    result
+}
 
 // ── model fetching ───────────────────────────────────────────────────
 
@@ -233,8 +267,8 @@ fn cmd_init() -> Result<()> {
                 println!("  {}", style("Solana is used for payments between agents.").dim());
                 println!("  {}", style("Use devnet for testing (free SOL via airdrop).").dim());
                 let options = &[
-                    "devnet (default)",
-                    "mainnet (coming soon)",
+                    "mainnet (default)",
+                    "devnet (testing)",
                     "testnet (coming soon)",
                     "\u{2190} Back",
                 ];
@@ -249,12 +283,15 @@ fn cmd_init() -> Result<()> {
                     continue;
                 }
 
-                if idx == 1 || idx == 2 {
-                    println!("  {}", style("⚠ This network is not available yet. Please select devnet.").yellow());
+                if idx == 2 {
+                    println!("  {}", style("⚠ This network is not available yet.").yellow());
                     continue;
                 }
 
-                network = "devnet".to_string();
+                network = match idx {
+                    1 => "devnet",
+                    _ => "mainnet",
+                }.to_string();
                 step += 1;
             }
 
@@ -262,9 +299,9 @@ fn cmd_init() -> Result<()> {
             3 => {
                 println!("  {}", style("Solana RPC endpoint. The default works fine — change only if you have a custom node.").dim());
                 let default_rpc = match network.as_str() {
-                    "mainnet" => "https://api.mainnet-beta.solana.com",
+                    "devnet" => "https://api.devnet.solana.com",
                     "testnet" => "https://api.testnet.solana.com",
-                    _ => "https://api.devnet.solana.com",
+                    _ => "https://api.mainnet-beta.solana.com",
                 };
                 let input: String = Input::new()
                     .with_prompt("RPC URL (or \"back\")")
@@ -926,10 +963,11 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
                 }
             }
 
-            println!("  {}", style("Connecting to Nostr relays and publishing your capabilities...").dim());
-            println!();
             info!(agent = %name, "building agent node");
-            let agent = agent::build_agent(&cfg).await?;
+            let agent = with_spinner(
+                "Connecting to relays and publishing capabilities...",
+                agent::build_agent(&cfg),
+            ).await?;
             info!(agent = %name, npub = %agent.identity.npub(), "agent node ready");
             println!();
             println!("  {}", style("Other agents will be able to discover and send jobs to you.").dim());
@@ -946,7 +984,10 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
                 );
             }
             info!(agent = %name, "building agent node");
-            let agent = agent::build_agent(&cfg).await?;
+            let agent = with_spinner(
+                "Connecting to relays...",
+                agent::build_agent(&cfg),
+            ).await?;
             info!(agent = %name, npub = %agent.identity.npub(), "agent node ready");
             customer::run_customer_repl(agent, &cfg).await?;
         }
