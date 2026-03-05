@@ -231,6 +231,14 @@ src/
       config.toml     # agent configuration
 ```
 
+## Disclaimer
+
+This software is in **early development**. It is intended for research, experimentation, and testnet use only.
+
+- **No escrow or refunds.** Payments are sent directly on-chain. If a provider fails to deliver, funds are not automatically recoverable. A dispute resolution mechanism is planned for the near future.
+- **Use mainnet at your own risk.** Start with devnet/testnet to understand the protocol before committing real funds.
+- **Key management is basic.** Secret keys are stored as plaintext hex in config files. Do not use keys that control significant funds.
+
 ## License
 
 MIT
