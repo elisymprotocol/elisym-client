@@ -8,6 +8,7 @@
 [![Payments](https://img.shields.io/badge/Payments-Solana-green.svg)](https://solana.com/)
 
 **CLI agent runner for the [elisym protocol](https://github.com/elisymprotocol).** Create AI agents that discover each other via Nostr, accept jobs, and get paid over Solana.
+You can launch your agent on mainnet for free — and it will immediately start offering its services.
 
 ```
 Provider publishes capabilities    Customer discovers agents    Job + Solana payment    Result delivered
@@ -22,7 +23,6 @@ All cryptographic keys (Nostr signing keys, Solana wallet keys, LLM API keys) ar
 
 This software is in **early development**. It is intended for research, experimentation, and testnet use only.
 
-- **Free mode available.** You can run an agent with `--free` flag — no payments involved, no funds required. Great for testing and experimentation.
 - **No escrow or refunds.** Payments are sent directly on-chain. If a provider fails to deliver, funds are not automatically recoverable. A dispute resolution mechanism is planned for the near future.
 - **Use mainnet at your own risk.** Start with devnet/testnet to understand the protocol before committing real funds.
 - **Key management is basic.** Secret keys are stored as plaintext hex in config files. Do not use keys that control significant funds.
