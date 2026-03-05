@@ -228,6 +228,15 @@ impl DashboardState {
 fn render(frame: &mut ratatui::Frame, state: &DashboardState) {
     let area = frame.area();
 
+    // Force-clear the entire frame with terminal default colors.
+    // Without this, ratatui may leave stale fg/bg on light terminal themes.
+    let reset_style = Style::default().fg(Color::Reset).bg(Color::Reset);
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            frame.buffer_mut()[(x, y)].set_style(reset_style);
+        }
+    }
+
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(3),   // content
@@ -333,7 +342,7 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
                 format!(" {} ", scan_frames[scan_idx]),
                 Style::default().fg(Color::Cyan),
             ),
-            Span::styled("Scanning network for agents", Style::default().fg(Color::White)),
+            Span::styled("Scanning network for agents", Style::default().fg(Color::Reset)),
             Span::styled(dots, Style::default().fg(Color::Cyan)),
         ]))
         .block(
@@ -353,7 +362,7 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
         "Price",
         "Earned SOL",
     ])
-    .style(Style::default().bold().fg(Color::Cyan))
+    .style(Style::default().bold().fg(Color::Cyan).bg(Color::Reset))
     .bottom_margin(1);
 
     let content_height = area.height.saturating_sub(4) as usize;
@@ -390,24 +399,28 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
                     .bg(Color::Blue)
                     .fg(Color::White)
                     .add_modifier(Modifier::BOLD)
-            } else if i % 2 == 1 {
-                Style::default()
-                    .bg(Color::Indexed(235)) // 256-color dark gray, falls back gracefully
-                    .fg(Color::White)
             } else {
-                Style::default().fg(Color::White)
+                Style::default().fg(Color::Reset).bg(Color::Reset)
             };
 
+            let is_cursor = i == state.cursor;
+            let cell_bg = if is_cursor { Color::Blue } else { Color::Reset };
+
             // Earned column with color based on amount
-            let earned_cell = if agent_earned > 0 {
-                Cell::from(earned_str).style(Style::default().fg(Color::Green))
+            let earned_fg = if is_cursor {
+                Color::White
+            } else if agent_earned > 0 {
+                Color::Green
             } else {
-                Cell::from(earned_str).style(Style::default().fg(Color::DarkGray))
+                Color::DarkGray
             };
+            let earned_cell = Cell::from(earned_str).style(Style::default().fg(earned_fg).bg(cell_bg));
+
+            let pubkey_fg = if is_cursor { Color::White } else { Color::DarkGray };
 
             Row::new(vec![
                 Cell::from(truncate(&a.name, 20)),
-                Cell::from(truncate(&a.pubkey, 16)).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(truncate(&a.pubkey, 16)).style(Style::default().fg(pubkey_fg).bg(cell_bg)),
                 Cell::from(caps),
                 Cell::from(price_str),
                 earned_cell,
@@ -426,12 +439,15 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
 
     let title = format!(" Agents ({}) ", agent_count);
 
-    let table = Table::new(rows, widths).header(header).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(Span::styled(title, Style::default().fg(Color::Cyan).bold()))
-            .border_style(Style::default().fg(border_color)),
-    );
+    let table = Table::new(rows, widths)
+        .header(header)
+        .style(Style::default().fg(Color::Reset).bg(Color::Reset))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(Span::styled(title, Style::default().fg(Color::Cyan).bold()))
+                .border_style(Style::default().fg(border_color)),
+        );
 
     frame.render_widget(table, area);
 }
@@ -452,13 +468,13 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
         // Description
         Line::from(vec![
             Span::styled("  Description   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&agent.description, Style::default().fg(Color::White)),
+            Span::styled(&agent.description, Style::default().fg(Color::Reset)),
         ]),
         Line::raw(""),
         // Pubkey (full)
         Line::from(vec![
             Span::styled("  Pubkey        ", Style::default().fg(Color::DarkGray)),
-            Span::styled(&agent.pubkey, Style::default().fg(Color::White)),
+            Span::styled(&agent.pubkey, Style::default().fg(Color::Reset)),
         ]),
         Line::raw(""),
         // Capabilities header
@@ -477,7 +493,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
             lines.push(Line::from(vec![
                 Span::raw("    "),
                 Span::styled("• ", Style::default().fg(Color::Cyan)),
-                Span::styled(cap.as_str(), Style::default().fg(Color::White)),
+                Span::styled(cap.as_str(), Style::default().fg(Color::Reset)),
             ]));
         }
     }
@@ -508,7 +524,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
     if let Some(ref addr) = agent.payment_address {
         lines.push(Line::from(vec![
             Span::styled("  Pay Address   ", Style::default().fg(Color::DarkGray)),
-            Span::styled(addr.as_str(), Style::default().fg(Color::White)),
+            Span::styled(addr.as_str(), Style::default().fg(Color::Reset)),
         ]));
         lines.push(Line::raw(""));
     }
@@ -543,7 +559,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
         let kinds_str: Vec<String> = agent.supported_kinds.iter().map(|k| k.to_string()).collect();
         lines.push(Line::from(vec![
             Span::styled("  Job Kinds     ", Style::default().fg(Color::DarkGray)),
-            Span::styled(kinds_str.join(", "), Style::default().fg(Color::White)),
+            Span::styled(kinds_str.join(", "), Style::default().fg(Color::Reset)),
         ]));
         lines.push(Line::raw(""));
     }
@@ -558,7 +574,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
             for json_line in pretty.lines() {
                 lines.push(Line::from(Span::styled(
                     format!("    {}", json_line),
-                    Style::default().fg(Color::White),
+                    Style::default().fg(Color::Reset),
                 )));
             }
         }
