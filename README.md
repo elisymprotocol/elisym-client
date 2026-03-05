@@ -98,11 +98,10 @@ Step-by-step wizard:
 2. Description (shown to other agents on the network)
 3. Solana network (devnet by default, mainnet/testnet coming soon)
 4. RPC URL (auto-filled, change only for custom nodes)
-5. Job price in SOL (e.g. 0.01)
-6. LLM provider (Anthropic / OpenAI)
-7. API key
-8. Model (fetched live from provider API)
-9. Max tokens per LLM response
+5. LLM provider (Anthropic / OpenAI)
+6. API key
+7. Model (fetched live from provider API)
+8. Max tokens per LLM response
 
 Generates a Nostr keypair + Solana keypair and saves to `~/.elisym/agents/<name>/config.toml`.
 
@@ -117,6 +116,7 @@ elisym start <my-agent-name> --free  # skip payments (testing)
 **Provider mode:**
 - Publishes capabilities to Nostr relays (NIP-89)
 - On first run with default capabilities, uses LLM to extract capabilities from your description
+- Prompts for job price in SOL (after capabilities are set)
 - Listens for NIP-90 job requests
 - Sends Solana payment request → waits for payment → calls LLM → delivers result
 - Graceful shutdown on Ctrl+C (30s timeout for in-flight jobs)
@@ -136,7 +136,7 @@ elisym config <my-agent-name>
 ```
 
 Interactive menu:
-- **Provider settings** — toggle/add capabilities (LLM-powered extraction), change LLM provider
+- **Provider settings** — toggle/add capabilities (LLM-powered extraction), set job price, change LLM provider
 - **Customer settings** — configure a separate LLM for customer mode
 
 ### `wallet` / `airdrop` / `send`

@@ -178,7 +178,6 @@ fn cmd_init() -> Result<()> {
     let mut description = String::new();
     let mut network = String::new();
     let mut rpc_url_opt: Option<String> = None;
-    let mut job_price: u64 = 0;
     let mut provider = String::new();
     let mut api_key = String::new();
     let mut model = String::new();
@@ -281,32 +280,8 @@ fn cmd_init() -> Result<()> {
                 step += 1;
             }
 
-            // Step 4: Job price in SOL
+            // Step 4: LLM provider
             4 => {
-                println!("  {}", style("How much your agent charges per task (in SOL). On devnet 0.01 SOL is a good default.").dim());
-                let input: String = Input::new()
-                    .with_prompt("Job price in SOL, e.g. 0.01 (or \"back\")")
-                    .default("0.01".into())
-                    .interact_text()?;
-
-                if input.eq_ignore_ascii_case("back") {
-                    step -= 1;
-                    continue;
-                }
-
-                match input.parse::<f64>() {
-                    Ok(sol) if sol >= 0.0 => {
-                        job_price = (sol * 1_000_000_000.0) as u64;
-                        step += 1;
-                    }
-                    _ => {
-                        println!("  {} Invalid amount. Enter a number like 0.01", style("!").yellow());
-                    }
-                }
-            }
-
-            // Step 5: LLM provider
-            5 => {
                 println!("  {}", style("Your agent uses an LLM to process tasks. Pick a provider and enter your API key.").dim());
                 let options = &["Anthropic (Claude)", "OpenAI (GPT)", "\u{2190} Back"];
                 let idx = Select::new()
@@ -327,8 +302,8 @@ fn cmd_init() -> Result<()> {
                 step += 1;
             }
 
-            // Step 6: API key
-            6 => {
+            // Step 5: API key
+            5 => {
                 let label = if provider == "anthropic" {
                     "Anthropic (Claude)"
                 } else {
@@ -352,8 +327,8 @@ fn cmd_init() -> Result<()> {
                 step += 1;
             }
 
-            // Step 7: Model selection (fetched from API)
-            7 => {
+            // Step 6: Model selection (fetched from API)
+            6 => {
                 println!("  {}", style("Which model your agent will use. Faster models = lower cost, smarter models = better results.").dim());
                 let mut models = fetch_models(&provider, &api_key);
                 models.push("\u{2190} Back".to_string());
@@ -373,8 +348,8 @@ fn cmd_init() -> Result<()> {
                 step += 1;
             }
 
-            // Step 8: Max tokens
-            8 => {
+            // Step 7: Max tokens
+            7 => {
                 println!("  {}", style("Maximum length of each LLM response (in tokens). 4096 is good for most tasks.").dim());
                 let input: String = Input::new()
                     .with_prompt("Max tokens per LLM response (or \"back\")")
@@ -433,7 +408,7 @@ fn cmd_init() -> Result<()> {
             network: network.clone(),
             rpc_url: rpc_url_opt,
             token: "sol".to_string(),
-            job_price,
+            job_price: 10_000_000, // 0.01 SOL default, configured on first start
             payment_timeout_secs: 120,
             solana_secret_key,
         },
@@ -450,11 +425,6 @@ fn cmd_init() -> Result<()> {
     println!("  npub:    {}", style(&npub).dim());
     println!("  wallet:  {}", style(&solana_address).dim());
     println!("  network: {}", style(&network).dim());
-    println!(
-        "  price:   {} SOL ({} lamports)",
-        style(format_sol(job_price)).dim(),
-        style(job_price).dim()
-    );
     println!("  config:  {}", style(config::config_path(&name)?.display()).dim());
 
     if network != "mainnet" {
@@ -487,7 +457,7 @@ fn cmd_config(name: &str) -> Result<()> {
             // Provider settings
             0 => {
                 loop {
-                    let sub_options = &["Capabilities", "LLM provider", "\u{2190} Back"];
+                    let sub_options = &["Capabilities", "Job price", "LLM provider", "\u{2190} Back"];
                     let sub_idx = Select::new()
                         .with_prompt("Provider settings")
                         .items(sub_options)
@@ -508,8 +478,9 @@ fn cmd_config(name: &str) -> Result<()> {
                                     for (n, p) in &caps {
                                         cfg.capability_prompts.insert(n.clone(), p.clone());
                                     }
+                                    config::save_config(&cfg)?;
                                     println!(
-                                        "  {} Capabilities: {}",
+                                        "  {} Capabilities saved: {}",
                                         style("*").green(),
                                         cfg.capabilities.join(", ")
                                     );
@@ -558,7 +529,7 @@ fn cmd_config(name: &str) -> Result<()> {
                                             selected
                                         };
                                         cfg.inactive_capabilities = inactive;
-                                        // Prompts preserved in capability_prompts for both
+                                        config::save_config(&cfg)?;
 
                                         println!(
                                             "  {} Active: {}",
@@ -590,8 +561,9 @@ fn cmd_config(name: &str) -> Result<()> {
                                                 );
                                             }
                                         }
+                                        config::save_config(&cfg)?;
                                         println!(
-                                            "  {} Capabilities: {}",
+                                            "  {} Capabilities saved: {}",
                                             style("*").green(),
                                             cfg.capabilities.join(", ")
                                         );
@@ -601,11 +573,39 @@ fn cmd_config(name: &str) -> Result<()> {
                                 }
                             }
                         }
-                        // LLM provider
+                        // Job price
                         1 => {
+                            println!(
+                                "  {} Current price: {} SOL",
+                                style("~").dim(),
+                                format_sol(cfg.payment.job_price)
+                            );
+                            let input: String = Input::new()
+                                .with_prompt("Job price in SOL")
+                                .default(format_sol(cfg.payment.job_price))
+                                .interact_text()?;
+
+                            match input.parse::<f64>() {
+                                Ok(sol) if sol >= 0.0 => {
+                                    cfg.payment.job_price = (sol * 1_000_000_000.0) as u64;
+                                    config::save_config(&cfg)?;
+                                    println!(
+                                        "  {} Price set to {} SOL",
+                                        style("*").green(),
+                                        format_sol(cfg.payment.job_price)
+                                    );
+                                }
+                                _ => {
+                                    println!("  {} Invalid amount.", style("!").yellow());
+                                }
+                            }
+                        }
+                        // LLM provider
+                        2 => {
                             if let Some(llm) = prompt_llm_section()? {
                                 cfg.llm = Some(llm);
-                                println!("  {} Provider LLM updated.", style("*").green());
+                                config::save_config(&cfg)?;
+                                println!("  {} Provider LLM saved.", style("*").green());
                             }
                         }
                         // Back
@@ -627,7 +627,8 @@ fn cmd_config(name: &str) -> Result<()> {
                         0 => {
                             if let Some(llm) = prompt_llm_section()? {
                                 cfg.customer_llm = Some(llm);
-                                println!("  {} Customer LLM updated.", style("*").green());
+                                config::save_config(&cfg)?;
+                                println!("  {} Customer LLM saved.", style("*").green());
                             }
                         }
                         _ => break,
@@ -639,9 +640,8 @@ fn cmd_config(name: &str) -> Result<()> {
         }
     }
 
-    config::save_config(&cfg)?;
     println!(
-        "\n  {} Configuration saved for '{}'.",
+        "\n  {} All changes saved for '{}'.",
         style("*").green(),
         style(name).cyan()
     );
@@ -880,6 +880,28 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
                     println!(
                         "  {} Capabilities saved. Publishing to network...\n",
                         style("*").green()
+                    );
+                }
+            }
+
+            // Job price prompt (first-time or update)
+            println!("  {}", style("How much your agent charges per task (in SOL). On devnet 0.01 SOL is a good default.").dim());
+            let price_input: String = Input::new()
+                .with_prompt("Job price in SOL")
+                .default(format_sol(cfg.payment.job_price))
+                .interact_text()?;
+
+            if let Ok(sol) = price_input.parse::<f64>() {
+                if sol >= 0.0 {
+                    let new_price = (sol * 1_000_000_000.0) as u64;
+                    if new_price != cfg.payment.job_price {
+                        cfg.payment.job_price = new_price;
+                        config::save_config(&cfg)?;
+                    }
+                    println!(
+                        "  {} Price: {} SOL\n",
+                        style("*").green(),
+                        style(format_sol(cfg.payment.job_price)).cyan()
                     );
                 }
             }
