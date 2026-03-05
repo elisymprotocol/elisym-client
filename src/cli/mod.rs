@@ -408,7 +408,7 @@ fn cmd_init() -> Result<()> {
             network: network.clone(),
             rpc_url: rpc_url_opt,
             token: "sol".to_string(),
-            job_price: 10_000_000, // 0.01 SOL default, configured on first start
+            job_price: 10_000_000, // 0.01 SOL default
             payment_timeout_secs: 120,
             solana_secret_key,
         },
@@ -580,23 +580,31 @@ fn cmd_config(name: &str) -> Result<()> {
                                 style("~").dim(),
                                 format_sol(cfg.payment.job_price)
                             );
-                            let input: String = Input::new()
-                                .with_prompt("Job price in SOL")
-                                .default(format_sol(cfg.payment.job_price))
-                                .interact_text()?;
+                            loop {
+                                let input: String = Input::new()
+                                    .with_prompt("Job price in SOL")
+                                    .default(format_sol(cfg.payment.job_price))
+                                    .interact_text()?;
 
-                            match input.parse::<f64>() {
-                                Ok(sol) if sol >= 0.0 => {
-                                    cfg.payment.job_price = (sol * 1_000_000_000.0) as u64;
-                                    config::save_config(&cfg)?;
-                                    println!(
-                                        "  {} Price set to {} SOL",
-                                        style("*").green(),
-                                        format_sol(cfg.payment.job_price)
-                                    );
-                                }
-                                _ => {
-                                    println!("  {} Invalid amount.", style("!").yellow());
+                                match input.parse::<f64>() {
+                                    Ok(sol) if sol >= 0.0 => {
+                                        let new_price = (sol * 1_000_000_000.0) as u64;
+                                        if let Some(err) = agent::validate_job_price(new_price) {
+                                            println!("  {} {}", style("!").yellow(), err);
+                                            continue;
+                                        }
+                                        cfg.payment.job_price = new_price;
+                                        config::save_config(&cfg)?;
+                                        println!(
+                                            "  {} Price set to {} SOL",
+                                            style("*").green(),
+                                            format_sol(cfg.payment.job_price)
+                                        );
+                                        break;
+                                    }
+                                    _ => {
+                                        println!("  {} Invalid amount.", style("!").yellow());
+                                    }
                                 }
                             }
                         }
@@ -885,24 +893,36 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
             }
 
             // Job price prompt (first-time or update)
-            println!("  {}", style("How much your agent charges per task (in SOL). On devnet 0.01 SOL is a good default.").dim());
-            let price_input: String = Input::new()
-                .with_prompt("Job price in SOL")
-                .default(format_sol(cfg.payment.job_price))
-                .interact_text()?;
+            println!("  {}", style(
+                "How much your agent charges per task (in SOL). A 3% protocol fee is deducted from each payment."
+            ).dim());
+            loop {
+                let price_input: String = Input::new()
+                    .with_prompt("Job price in SOL")
+                    .default(format_sol(cfg.payment.job_price))
+                    .interact_text()?;
 
-            if let Ok(sol) = price_input.parse::<f64>() {
-                if sol >= 0.0 {
-                    let new_price = (sol * 1_000_000_000.0) as u64;
-                    if new_price != cfg.payment.job_price {
-                        cfg.payment.job_price = new_price;
-                        config::save_config(&cfg)?;
+                match price_input.parse::<f64>() {
+                    Ok(sol) if sol >= 0.0 => {
+                        let new_price = (sol * 1_000_000_000.0) as u64;
+                        if let Some(err) = agent::validate_job_price(new_price) {
+                            println!("  {} {}", style("!").yellow(), err);
+                            continue;
+                        }
+                        if new_price != cfg.payment.job_price {
+                            cfg.payment.job_price = new_price;
+                            config::save_config(&cfg)?;
+                        }
+                        println!(
+                            "  {} Price: {} SOL\n",
+                            style("*").green(),
+                            style(format_sol(cfg.payment.job_price)).cyan()
+                        );
+                        break;
                     }
-                    println!(
-                        "  {} Price: {} SOL\n",
-                        style("*").green(),
-                        style(format_sol(cfg.payment.job_price)).cyan()
-                    );
+                    _ => {
+                        println!("  {} Invalid amount.", style("!").yellow());
+                    }
                 }
             }
 

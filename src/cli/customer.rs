@@ -373,10 +373,15 @@ async fn handle_request_inner(
         );
         println!("     \"{}\"", p.card.description);
         println!("     Capabilities: {}", p.card.capabilities.join(", "));
+        let fee_note = p.card.metadata.as_ref()
+            .and_then(|m| m["protocol_fee_bps"].as_u64())
+            .map(|bps| format!(" (incl. {:.2}% protocol fee)", bps as f64 / 100.0))
+            .unwrap_or_default();
         println!(
-            "     Price: {} {}",
+            "     Price: {} {}{}",
             format_price(price_str, &token),
             token.to_uppercase(),
+            fee_note,
         );
         println!(
             "     Relevance: {}/100 — \"{}\"\n",
@@ -401,6 +406,9 @@ async fn handle_request_inner(
         .interact()
     {
         Ok(s) => s,
+        Err(dialoguer::Error::IO(ref e)) if e.kind() == io::ErrorKind::Interrupted => {
+            return RequestOutcome::Interrupted;
+        }
         Err(e) => return RequestOutcome::Err(e.into()),
     };
 
@@ -492,7 +500,30 @@ async fn handle_request_inner(
                 match feedback.parsed_status() {
                     Some(JobStatus::PaymentRequired) => {
                         if let Some(ref pay_req) = feedback.payment_request {
-                            println!("  {} Payment required — paying...", style("$").yellow());
+                            // Parse fee info from request for display
+                            if let Ok(req_data) = serde_json::from_str::<Value>(pay_req) {
+                                let total = req_data["amount"].as_u64().unwrap_or(0);
+                                if let (Some(fee_amt), Some(_fee_addr)) = (
+                                    req_data["fee_amount"].as_u64(),
+                                    req_data["fee_address"].as_str(),
+                                ) {
+                                    let provider_net = total.saturating_sub(fee_amt);
+                                    let token = req_data["mint"].as_str().map_or("SOL", |_| "USDC");
+                                    println!(
+                                        "  {} Payment: {} total → {} provider + {} protocol fee ({})",
+                                        style("$").yellow(),
+                                        style(total).bold(),
+                                        provider_net,
+                                        fee_amt,
+                                        token,
+                                    );
+                                } else {
+                                    println!("  {} Payment required — paying...", style("$").yellow());
+                                }
+                            } else {
+                                println!("  {} Payment required — paying...", style("$").yellow());
+                            }
+
                             let payments = match agent.payments.as_ref() {
                                 Some(p) => p,
                                 None => {

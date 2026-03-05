@@ -5,10 +5,38 @@ use elisym_core::marketplace::JobRequest;
 use elisym_core::messaging::PrivateMessage;
 use elisym_core::types::JobStatus;
 use elisym_core::{
-    AgentNode, AgentNodeBuilder,
+    AgentNode, AgentNodeBuilder, FeeConfig, PaymentChain,
     SolanaPaymentConfig, SolanaPaymentProvider, SolanaNetwork, SolanaToken,
     USDC_MINT_DEVNET, USDC_MINT_MAINNET,
 };
+
+/// Protocol fee in basis points (300 = 3%). Integer-only arithmetic.
+const PROTOCOL_FEE_BPS: u64 = 300;
+/// Solana address of the protocol treasury.
+const PROTOCOL_TREASURY: &str = "GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy";
+/// Solana rent-exempt minimum for a 0-data account (lamports).
+const RENT_EXEMPT_MINIMUM: u64 = 890_880;
+
+/// Validate that the provider's net amount (price minus protocol fee) is above
+/// Solana's rent-exempt minimum. Returns an error message if invalid, None if OK.
+pub fn validate_job_price(lamports: u64) -> Option<String> {
+    if lamports == 0 {
+        return None; // free mode
+    }
+    let fee = (lamports * PROTOCOL_FEE_BPS).div_ceil(10_000);
+    let provider_net = lamports.saturating_sub(fee);
+    if provider_net < RENT_EXEMPT_MINIMUM {
+        Some(format!(
+            "Price too low: after {:.2}% protocol fee the provider receives {} lamports, \
+             which is below Solana rent-exempt minimum ({} lamports).",
+            PROTOCOL_FEE_BPS as f64 / 100.0,
+            provider_net,
+            RENT_EXEMPT_MINIMUM,
+        ))
+    } else {
+        None
+    }
+}
 use nostr_sdk::Timestamp;
 use solana_sdk::pubkey::Pubkey;
 use tokio::task::JoinSet;
@@ -50,10 +78,16 @@ pub fn build_solana_provider(config: &AgentConfig) -> Result<SolanaPaymentProvid
         token,
     };
 
-    let provider = SolanaPaymentProvider::from_secret_key(
+    let mut provider = SolanaPaymentProvider::from_secret_key(
         solana_config,
         &config.payment.solana_secret_key,
     )?;
+
+    provider.set_fee_config(FeeConfig {
+        app_fee_bps: PROTOCOL_FEE_BPS,
+        app_fee_address: PROTOCOL_TREASURY.to_string(),
+        app_fee_chain: PaymentChain::Solana,
+    });
 
     Ok(provider)
 }
@@ -86,6 +120,7 @@ pub async fn build_agent(config: &AgentConfig) -> Result<AgentNode> {
         "token": config.payment.token,
         "chain": config.payment.chain,
         "network": config.payment.network,
+        "protocol_fee_bps": PROTOCOL_FEE_BPS,
     }));
     agent
         .discovery
@@ -293,7 +328,17 @@ async fn process_job(
     };
 
     let chain_str = payment_request.chain.to_string();
-    info!(job_id = %job_id, price, chain = %chain_str, "requesting payment");
+    let fee_amount = (price * PROTOCOL_FEE_BPS).div_ceil(10_000);
+    let provider_net = price.saturating_sub(fee_amount);
+    info!(
+        job_id = %job_id,
+        total = price,
+        provider_net,
+        protocol_fee = fee_amount,
+        chain = %chain_str,
+        "requesting payment ({:.2}% protocol fee)",
+        PROTOCOL_FEE_BPS as f64 / 100.0,
+    );
 
     // 2. Send PaymentRequired feedback with payment request
     agent
