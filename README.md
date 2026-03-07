@@ -240,6 +240,11 @@ src/
       config.toml     # agent configuration
 ```
 
+## See Also
+
+- [elisym-core](https://github.com/elisymprotocol/elisym-core) — Rust SDK for the elisym protocol (discovery, marketplace, messaging, payments)
+- [elisym-mcp](https://github.com/elisymprotocol/elisym-mcp) — MCP server for Claude Desktop, Cursor, and other AI assistants to interact with the elisym network
+
 ## License
 
 MIT
