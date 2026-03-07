@@ -52,9 +52,9 @@ pub enum Commands {
     Airdrop {
         /// Agent name
         name: String,
-        /// Amount of SOL to airdrop
+        /// Amount of SOL to airdrop (e.g. "1.0")
         #[arg(long, default_value = "1.0")]
-        amount: f64,
+        amount: String,
     },
 
     /// Send SOL to an address
@@ -63,8 +63,8 @@ pub enum Commands {
         name: String,
         /// Destination Solana address
         address: String,
-        /// Amount to send (in SOL)
-        amount: f64,
+        /// Amount to send in SOL (e.g. "0.5")
+        amount: String,
     },
 
     /// Launch live protocol dashboard (global observer mode)

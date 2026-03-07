@@ -7,8 +7,9 @@ use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use nostr_sdk::{Filter, Kind, ToBech32};
+use tokio::sync::watch;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
@@ -121,7 +122,7 @@ impl DashboardState {
 
     fn last_update_str(&self) -> String {
         match self.last_update {
-            Some(ts) => format_local_time(ts),
+            Some(ts) => format_utc_time(ts),
             None => "syncing...".to_string(),
         }
     }
@@ -313,7 +314,7 @@ fn render_header(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
         ),
         Span::styled("  ", Style::default()),
         Span::styled(
-            format!("Total earned: {:.4} SOL", total_earned as f64 / 1e9),
+            format!("Total earned: {} SOL", super::format_sol_compact(total_earned)),
             Style::default().fg(earned_color).bold(),
         ),
         Span::styled("  ", Style::default()),
@@ -384,10 +385,10 @@ fn render_agents_list(frame: &mut ratatui::Frame, area: Rect, state: &DashboardS
         .skip(viewport_start)
         .take(content_height)
         .map(|(i, a)| {
-            let price_str = format!("{:.4} SOL", a.price as f64 / 1e9);
+            let price_str = format!("{} SOL", super::format_sol_compact(a.price));
             let agent_earned = state.agent_earned(&a.pubkey);
             let earned_str = if agent_earned > 0 {
-                format!("{:.4}", agent_earned as f64 / 1e9)
+                super::format_sol_compact(agent_earned)
             } else {
                 "—".to_string()
             };
@@ -499,7 +500,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
     lines.push(Line::raw(""));
 
     // Price
-    let price_str = format!("{:.4} SOL", agent.price as f64 / 1e9);
+    let price_str = format!("{} SOL", super::format_sol_compact(agent.price));
     lines.push(Line::from(vec![
         Span::styled("  Price         ", Style::default().fg(Color::DarkGray)),
         Span::styled(price_str, Style::default().fg(Color::Green)),
@@ -529,7 +530,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
         lines.push(Line::from(vec![
             Span::styled("  SOL Balance   ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{:.9} SOL", balance as f64 / 1e9),
+                format!("{} SOL", super::format_sol(balance)),
                 Style::default().fg(Color::Green),
             ),
         ]));
@@ -542,7 +543,7 @@ fn render_detail(frame: &mut ratatui::Frame, area: Rect, state: &DashboardState)
         lines.push(Line::from(vec![
             Span::styled("  Total Earned  ", Style::default().fg(Color::DarkGray)),
             Span::styled(
-                format!("{:.9} SOL", agent_earned as f64 / 1e9),
+                format!("{} SOL", super::format_sol(agent_earned)),
                 Style::default().fg(Color::Yellow).bold(),
             ),
         ]));
@@ -668,11 +669,31 @@ fn spawn_tick(tx: mpsc::Sender<DashboardEvent>) {
 }
 
 fn spawn_input(tx: mpsc::Sender<DashboardEvent>) {
-    tokio::task::spawn_blocking(move || loop {
-        if event::poll(Duration::from_millis(100)).unwrap_or(false) {
-            if let Ok(CEvent::Key(key)) = event::read() {
-                if tx.blocking_send(DashboardEvent::Key(key)).is_err() {
-                    break;
+    tokio::task::spawn_blocking(move || {
+        let mut consecutive_errors: u32 = 0;
+        loop {
+            match event::poll(Duration::from_millis(100)) {
+                Ok(true) => {
+                    consecutive_errors = 0;
+                    if let Ok(CEvent::Key(key)) = event::read() {
+                        if tx.blocking_send(DashboardEvent::Key(key)).is_err() {
+                            break;
+                        }
+                    }
+                }
+                Ok(false) => {
+                    consecutive_errors = 0;
+                    if tx.is_closed() {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    consecutive_errors += 1;
+                    // Persistent terminal errors — back off to avoid CPU spin
+                    if consecutive_errors > 50 {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
                 }
             }
         }
@@ -684,18 +705,27 @@ fn spawn_discovery(
     chain: String,
     network: String,
     tx: mpsc::Sender<DashboardEvent>,
+    addr_tx: watch::Sender<Vec<String>>,
 ) {
     tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(10));
+        let mut interval = tokio::time::interval(Duration::from_secs(30));
         loop {
             interval.tick().await;
             let filter = elisym_core::AgentFilter::default();
             match agent.discovery.search_agents(&filter).await {
                 Ok(agents) => {
+                    // Share discovered payment addresses with balance poller
+                    // (collected before the consuming loop below)
+                    let addrs: Vec<String> = agents
+                        .iter()
+                        .filter_map(|a| a.card.payment_address.clone())
+                        .collect();
+                    let _ = addr_tx.send(addrs);
+
                     for a in agents {
                         // Filter by chain + network
-                        let agent_chain = extract_chain(&a);
-                        let agent_network = extract_network(&a);
+                        let agent_chain = super::extract_chain(&a);
+                        let agent_network = super::extract_network(&a);
                         if !agent_chain.eq_ignore_ascii_case(&chain)
                             || !agent_network.eq_ignore_ascii_case(&network)
                         {
@@ -740,7 +770,7 @@ fn spawn_discovery(
 
 fn spawn_balance_poller(
     rpc: Arc<RpcClient>,
-    agent: Arc<elisym_core::AgentNode>,
+    addr_rx: watch::Receiver<Vec<String>>,
     tx: mpsc::Sender<DashboardEvent>,
 ) {
     tokio::spawn(async move {
@@ -748,14 +778,8 @@ fn spawn_balance_poller(
         loop {
             interval.tick().await;
 
-            let filter = elisym_core::AgentFilter::default();
-            let addresses: Vec<String> = match agent.discovery.search_agents(&filter).await {
-                Ok(agents) => agents
-                    .iter()
-                    .filter_map(|a| a.card.payment_address.clone())
-                    .collect(),
-                Err(_) => continue,
-            };
+            // Read addresses shared by the discovery task (no extra relay calls)
+            let addresses = addr_rx.borrow().clone();
 
             if addresses.is_empty() {
                 continue;
@@ -790,16 +814,19 @@ fn spawn_job_results(
     agent: Arc<elisym_core::AgentNode>,
     tx: mpsc::Sender<DashboardEvent>,
 ) {
+    const MAX_SEEN: usize = 10_000;
+
     tokio::spawn(async move {
         let result_kind = Kind::from(elisym_core::KIND_JOB_RESULT_BASE + elisym_core::DEFAULT_KIND_OFFSET);
-        let mut seen = HashSet::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut since_ts = nostr_sdk::Timestamp::now();
         let mut interval = tokio::time::interval(Duration::from_secs(15));
 
         loop {
             interval.tick().await;
 
-            // One-shot fetch — same reliable method as discovery uses
-            let filter = Filter::new().kind(result_kind);
+            // Fetch only events newer than last poll
+            let filter = Filter::new().kind(result_kind).since(since_ts);
             let events = match agent
                 .client
                 .fetch_events(vec![filter], Some(Duration::from_secs(10)))
@@ -810,9 +837,20 @@ fn spawn_job_results(
             };
 
             for event in events {
-                // Deduplicate
+                // Track latest timestamp for next poll
+                if event.created_at > since_ts {
+                    since_ts = event.created_at;
+                }
+                // Deduplicate within the current window
                 if !seen.insert(event.id) {
                     continue;
+                }
+                // Prune seen set to cap memory growth. Clear-all is acceptable
+                // because `since_ts` advances each poll, so old events won't
+                // reappear from relays.
+                if seen.len() > MAX_SEEN {
+                    seen.clear();
+                    seen.insert(event.id);
                 }
 
                 // Extract amount from "amount" tag
@@ -849,17 +887,6 @@ fn spawn_job_results(
 
 // ── Entry point ──────────────────────────────────────────────────────
 
-fn resolve_rpc_url(network: &str, rpc_url: Option<&str>) -> String {
-    if let Some(url) = rpc_url {
-        return url.to_string();
-    }
-    match network {
-        "mainnet" => elisym_core::SolanaNetwork::Mainnet.rpc_url(),
-        "testnet" => elisym_core::SolanaNetwork::Testnet.rpc_url(),
-        _ => elisym_core::SolanaNetwork::Mainnet.rpc_url(),
-    }
-}
-
 pub async fn run_dashboard(chain: String, network: String, rpc_url: Option<String>) -> Result<()> {
     info!(chain = %chain, network = %network, "launching protocol dashboard (observer mode)");
 
@@ -871,7 +898,7 @@ pub async fn run_dashboard(chain: String, network: String, rpc_url: Option<Strin
     let agent = Arc::new(agent);
 
     // Build Solana RPC client for balance queries
-    let resolved_rpc = resolve_rpc_url(&network, rpc_url.as_deref());
+    let resolved_rpc = super::resolve_rpc_url(&network, rpc_url.as_deref());
     let rpc = Arc::new(RpcClient::new_with_commitment(
         resolved_rpc,
         CommitmentConfig::confirmed(),
@@ -883,11 +910,14 @@ pub async fn run_dashboard(chain: String, network: String, rpc_url: Option<Strin
     // Channel
     let (tx, mut rx) = mpsc::channel::<DashboardEvent>(256);
 
+    // Shared address list: discovery writes, balance poller reads (no duplicate relay calls)
+    let (addr_tx, addr_rx) = watch::channel::<Vec<String>>(vec![]);
+
     // Spawn collectors
     spawn_tick(tx.clone());
     spawn_input(tx.clone());
-    spawn_discovery(Arc::clone(&agent), chain, network, tx.clone());
-    spawn_balance_poller(Arc::clone(&rpc), Arc::clone(&agent), tx.clone());
+    spawn_discovery(Arc::clone(&agent), chain, network, tx.clone(), addr_tx);
+    spawn_balance_poller(Arc::clone(&rpc), addr_rx, tx.clone());
     spawn_job_results(Arc::clone(&agent), tx.clone());
     drop(tx);
 
@@ -928,54 +958,20 @@ pub async fn run_dashboard(chain: String, network: String, rpc_url: Option<Strin
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
-fn truncate(s: &str, max: usize) -> String {
-    if s.len() <= max {
+fn truncate(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
         s.to_string()
     } else {
-        format!("{}…", &s[..s.floor_char_boundary(max.saturating_sub(1))])
+        let end: String = s.chars().take(max_chars.saturating_sub(1)).collect();
+        format!("{}…", end)
     }
 }
 
-fn extract_chain(agent: &elisym_core::DiscoveredAgent) -> String {
-    agent
-        .card
-        .metadata
-        .as_ref()
-        .and_then(|m| m["chain"].as_str())
-        .unwrap_or("solana")
-        .to_string()
-}
-
-fn extract_network(agent: &elisym_core::DiscoveredAgent) -> String {
-    agent
-        .card
-        .metadata
-        .as_ref()
-        .and_then(|m| m["network"].as_str())
-        .unwrap_or("devnet")
-        .to_string()
-}
-
-
-/// Format a unix timestamp as local time HH:MM:SS
-fn format_local_time(unix_ts: u64) -> String {
-    // Get local timezone offset using the difference between now() and UNIX_EPOCH
-    let now_sys = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    // Approximate local offset: compare system time with a known reference
-    // For simplicity, just display UTC time with the system's offset baked in
-    // since std doesn't expose timezone. We use libc-free approach:
-    // the timestamp IS already in UTC, we just show it as HH:MM:SS
+/// Format a unix timestamp as UTC time HH:MM:SS.
+fn format_utc_time(unix_ts: u64) -> String {
     let secs_of_day = unix_ts % 86400;
     let h = secs_of_day / 3600;
     let m = (secs_of_day % 3600) / 60;
     let s = secs_of_day % 60;
-
-    // Suppress unused warning
-    let _ = now_sys;
-
     format!("{:02}:{:02}:{:02} UTC", h, m, s)
 }

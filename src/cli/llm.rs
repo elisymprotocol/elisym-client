@@ -1,5 +1,9 @@
+use std::str::FromStr;
+
 use reqwest::Client;
 use serde_json::{json, Value};
+
+use zeroize::Zeroizing;
 
 use super::config::LlmSection;
 use super::error::{CliError, Result};
@@ -10,8 +14,10 @@ pub enum LlmProvider {
     OpenAi,
 }
 
-impl LlmProvider {
-    pub fn from_str(s: &str) -> Result<Self> {
+impl FromStr for LlmProvider {
+    type Err = CliError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
         match s {
             "anthropic" => Ok(Self::Anthropic),
             "openai" => Ok(Self::OpenAi),
@@ -22,7 +28,7 @@ impl LlmProvider {
 
 pub struct LlmClient {
     provider: LlmProvider,
-    api_key: String,
+    api_key: Zeroizing<String>,
     model: String,
     max_tokens: u32,
     http: Client,
@@ -30,10 +36,10 @@ pub struct LlmClient {
 
 impl LlmClient {
     pub fn new(config: &LlmSection) -> Result<Self> {
-        let provider = LlmProvider::from_str(&config.provider)?;
+        let provider: LlmProvider = config.provider.parse()?;
         Ok(Self {
             provider,
-            api_key: config.api_key.clone(),
+            api_key: Zeroizing::new(config.api_key.clone()),
             model: config.model.clone(),
             max_tokens: config.max_tokens,
             http: Client::new(),
@@ -60,7 +66,7 @@ impl LlmClient {
         let resp = self
             .http
             .post("https://api.anthropic.com/v1/messages")
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", self.api_key.as_str())
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
             .json(&body)
@@ -108,16 +114,16 @@ impl LlmClient {
             ])
         };
 
-        let body = json!({
+        let mut body = json!({
             "model": self.model,
-            tokens_key: self.max_tokens,
             "messages": messages
         });
+        body[tokens_key] = json!(self.max_tokens);
 
         let resp = self
             .http
             .post("https://api.openai.com/v1/chat/completions")
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key.as_str()))
             .header("content-type", "application/json")
             .json(&body)
             .send()

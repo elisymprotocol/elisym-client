@@ -6,9 +6,17 @@ use elisym_core::messaging::PrivateMessage;
 use elisym_core::types::JobStatus;
 use elisym_core::{
     AgentNode, AgentNodeBuilder,
-    SolanaPaymentConfig, SolanaPaymentProvider, SolanaNetwork,
+    SolanaPaymentConfig, SolanaPaymentProvider,
 };
+use nostr_sdk::Timestamp;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
+use tracing::{error, info, trace, warn};
 
+use super::config::AgentConfig;
+use super::error::{CliError, Result};
+use super::llm::LlmClient;
+use super::protocol::HeartbeatMessage;
 use super::{PROTOCOL_FEE_BPS, PROTOCOL_TREASURY, RENT_EXEMPT_MINIMUM};
 
 /// Validate that the provider's net amount (price minus protocol fee) is above
@@ -21,9 +29,9 @@ pub fn validate_job_price(lamports: u64) -> Option<String> {
     let provider_net = lamports.saturating_sub(fee);
     if provider_net < RENT_EXEMPT_MINIMUM {
         Some(format!(
-            "Price too low: after {:.2}% protocol fee the provider receives {} lamports, \
+            "Price too low: after {} protocol fee the provider receives {} lamports, \
              which is below Solana rent-exempt minimum ({} lamports).",
-            PROTOCOL_FEE_BPS as f64 / 100.0,
+            super::format_bps_percent(PROTOCOL_FEE_BPS),
             provider_net,
             RENT_EXEMPT_MINIMUM,
         ))
@@ -31,25 +39,11 @@ pub fn validate_job_price(lamports: u64) -> Option<String> {
         None
     }
 }
-use nostr_sdk::Timestamp;
-use tokio::task::JoinSet;
-use tracing::{error, info, trace, warn};
-
-use super::protocol::HeartbeatMessage;
-
-use super::config::AgentConfig;
-use super::error::{CliError, Result};
-use super::llm::LlmClient;
 
 /// Build a SolanaPaymentProvider directly from config (no relay connections needed).
 /// Use this for wallet-only operations: send, airdrop, balance checks.
 pub fn build_solana_provider(config: &AgentConfig) -> Result<SolanaPaymentProvider> {
-    let network = match config.payment.network.as_str() {
-        "mainnet" => SolanaNetwork::Mainnet,
-        "testnet" => SolanaNetwork::Testnet,
-        "devnet" => SolanaNetwork::Devnet,
-        other => SolanaNetwork::Custom(other.to_string()),
-    };
+    let network = super::parse_network(&config.payment.network);
 
     let solana_config = SolanaPaymentConfig {
         network,
@@ -161,6 +155,7 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
     let started_at = Timestamp::now();
 
     let mut tasks: JoinSet<()> = JoinSet::new();
+    let job_semaphore = Arc::new(Semaphore::new(10));
 
     loop {
         tokio::select! {
@@ -175,7 +170,7 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
                     continue;
                 }
                 let agent = Arc::clone(&agent);
-                tokio::spawn(async move {
+                tasks.spawn(async move {
                     handle_ping(&agent, msg).await;
                 });
             }
@@ -190,8 +185,13 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
                 let agent = Arc::clone(&agent);
                 let llm = Arc::clone(&llm);
                 let system_prompt = system_prompt.clone();
+                let sem = Arc::clone(&job_semaphore);
 
                 tasks.spawn(async move {
+                    let _permit = match sem.acquire().await {
+                        Ok(p) => p,
+                        Err(_) => return, // semaphore closed
+                    };
                     let result = if free_mode {
                         process_job_free(
                             &agent,
@@ -224,6 +224,13 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
                 }
             }
         }
+        // Drain any completed tasks promptly so panics are logged without waiting
+        // for the next select iteration.
+        while let Some(result) = tasks.try_join_next() {
+            if let Err(e) = result {
+                error!("job task panicked: {}", e);
+            }
+        }
     }
 
     // Drain remaining tasks with timeout
@@ -251,12 +258,21 @@ pub async fn run_agent(agent: AgentNode, config: &AgentConfig, free_mode: bool) 
         }
     }
 
-    // Drop receivers first, then agent on blocking thread to avoid async drop issues
+    // Drop receivers first, then agent on blocking thread to avoid async drop issues.
+    // Use into_inner() via Arc::into_inner (requires all clones dropped) with
+    // spawn_blocking fallback to avoid dropping the agent on the async runtime.
     drop(jobs_rx);
     drop(messages_rx);
-    let agent = Arc::try_unwrap(agent).ok();
-    if let Some(agent) = agent {
-        tokio::task::spawn_blocking(move || drop(agent)).await.ok();
+    match Arc::try_unwrap(agent) {
+        Ok(agent) => {
+            tokio::task::spawn_blocking(move || drop(agent)).await.ok();
+        }
+        Err(arc) => {
+            // Other Arc clones still exist (shouldn't happen after abort_all, but be safe).
+            // Spawn blocking drop so the async runtime isn't blocked.
+            warn!("agent Arc still shared — dropping on blocking thread");
+            tokio::task::spawn_blocking(move || drop(arc)).await.ok();
+        }
     }
 
     info!("agent shut down cleanly");
@@ -319,8 +335,8 @@ async fn process_job(
         provider_net,
         protocol_fee = fee_amount,
         chain = %chain_str,
-        "requesting payment ({:.2}% protocol fee)",
-        PROTOCOL_FEE_BPS as f64 / 100.0,
+        "requesting payment ({} protocol fee)",
+        super::format_bps_percent(PROTOCOL_FEE_BPS),
     );
 
     // 2. Send PaymentRequired feedback with payment request
@@ -349,10 +365,12 @@ async fn process_job(
                 warn!("payment lookup error: {}", e);
             }
         }
-        if tokio::time::Instant::now() + poll_interval > deadline {
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
             break false;
         }
-        tokio::time::sleep(poll_interval).await;
+        // Sleep until next poll or deadline, whichever comes first
+        tokio::time::sleep_until(deadline.min(now + poll_interval)).await;
     };
 
     if !paid {
@@ -396,7 +414,7 @@ async fn process_job(
                 .submit_job_feedback(
                     &job.raw_event,
                     JobStatus::Error,
-                    Some(&format!("LLM error: {}", e)),
+                    Some(&format!("processing failed after payment received: {}", e)),
                     None,
                     None,
                     None,
@@ -407,58 +425,7 @@ async fn process_job(
     };
 
     // 6. Deliver result (3 retries with backoff)
-    let mut last_err = None;
-    for attempt in 0..3 {
-        match agent
-            .marketplace
-            .submit_job_result(&job.raw_event, &result, Some(provider_net))
-            .await
-        {
-            Ok(result_id) => {
-                info!(
-                    job_id = %job_id,
-                    result_id = %result_id,
-                    "job completed — result delivered"
-                );
-                // Show updated balance
-                if let Some(solana) = agent.solana_payments() {
-                    if let Ok(balance) = solana.balance() {
-                        info!(
-                            balance_lamports = balance,
-                            balance_sol = format!("{:.4}", balance as f64 / 1_000_000_000.0),
-                            "wallet balance after payment"
-                        );
-                    }
-                }
-                return Ok(());
-            }
-            Err(e) => {
-                warn!(
-                    job_id = %job_id,
-                    attempt = attempt + 1,
-                    "failed to deliver result: {}",
-                    e
-                );
-                last_err = Some(e);
-                tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
-            }
-        }
-    }
-
-    let err = last_err.unwrap();
-    agent
-        .marketplace
-        .submit_job_feedback(
-            &job.raw_event,
-            JobStatus::Error,
-            Some(&format!("delivery failed: {}", err)),
-            None,
-            None,
-            None,
-        )
-        .await?;
-
-    Err(err.into())
+    deliver_result(agent, &job, &result, Some(provider_net)).await
 }
 
 /// Process a single job in free mode: skip payment, go straight to LLM.
@@ -506,19 +473,40 @@ async fn process_job_free(
     };
 
     // 3. Deliver result (3 retries with backoff)
+    deliver_result(agent, &job, &result, None).await
+}
+
+/// Deliver a job result with 3 retries and exponential backoff.
+async fn deliver_result(
+    agent: &AgentNode,
+    job: &JobRequest,
+    result: &str,
+    amount: Option<u64>,
+) -> Result<()> {
+    let job_id = job.event_id;
     let mut last_err = None;
+
     for attempt in 0..3 {
         match agent
             .marketplace
-            .submit_job_result(&job.raw_event, &result, None)
+            .submit_job_result(&job.raw_event, result, amount)
             .await
         {
             Ok(result_id) => {
                 info!(
                     job_id = %job_id,
                     result_id = %result_id,
-                    "job completed (free) — result delivered"
+                    "job completed — result delivered"
                 );
+                if let Some(solana) = agent.solana_payments() {
+                    if let Ok(balance) = solana.balance() {
+                        info!(
+                            balance_lamports = balance,
+                            balance_sol = %super::format_sol_compact(balance),
+                            "wallet balance after payment"
+                        );
+                    }
+                }
                 return Ok(());
             }
             Err(e) => {

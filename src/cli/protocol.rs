@@ -1,7 +1,16 @@
 use serde::{Deserialize, Serialize};
-use solana_sdk::signature::Keypair;
 
-/// Heartbeat message for ping/pong liveness checks (NIP-17 encrypted).
+/// Heartbeat message for ping/pong liveness checks over NIP-17 encrypted DMs.
+///
+/// Before submitting a job, the customer pings candidate providers to verify
+/// they are online. A provider that responds with a matching pong (same nonce)
+/// is considered live and eligible for job selection.
+///
+/// Wire format (JSON inside NIP-17 envelope):
+/// ```json
+/// { "type": "elisym_ping", "nonce": "<random_bs58>" }
+/// { "type": "elisym_pong", "nonce": "<echo_back_same_nonce>" }
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatMessage {
     #[serde(rename = "type")]
@@ -33,7 +42,9 @@ impl HeartbeatMessage {
     }
 }
 
-/// Generate a cryptographically random nonce using OS entropy (via Solana's OsRng).
+/// Generate a cryptographically random nonce using OS entropy.
 pub fn random_nonce() -> String {
-    bs58::encode(&Keypair::new().to_bytes()[..16]).into_string()
+    let mut buf = [0u8; 16];
+    getrandom::getrandom(&mut buf).expect("failed to generate random bytes");
+    bs58::encode(&buf).into_string()
 }

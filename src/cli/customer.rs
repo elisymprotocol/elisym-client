@@ -24,6 +24,11 @@ use super::llm::LlmClient;
 use super::protocol::{self, HeartbeatMessage};
 use super::{PROTOCOL_FEE_BPS, PROTOCOL_TREASURY};
 
+/// Max bytes for job input sent via relay tags (strfry default tag limit is 1024).
+const MAX_JOB_INPUT_BYTES: usize = 950;
+/// Timeout for waiting on a provider result (seconds).
+const RESULT_TIMEOUT_SECS: u64 = 300;
+
 enum RequestOutcome {
     Done,
     Continue,
@@ -35,6 +40,16 @@ enum InputResult {
     Text(String),
     Eof,
     Interrupted,
+}
+
+/// RAII guard that restores terminal state (raw mode + bracketed paste) on drop.
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste);
+        let _ = disable_raw_mode();
+    }
 }
 
 // ── Event-driven input ───────────────────────────────────────────────
@@ -140,16 +155,18 @@ impl InputState {
         balance: u64,
         prev: u64,
     ) -> io::Result<()> {
-        let sol = balance as f64 / 1_000_000_000.0;
         let diff = balance as i64 - prev as i64;
-        let diff_sol = diff as f64 / 1_000_000_000.0;
-        let sign = if diff > 0 { "+" } else { "" };
+        let (sign, abs_diff) = if diff >= 0 {
+            ("+", diff as u64)
+        } else {
+            ("-", (-diff) as u64)
+        };
         self.balance_line = Some(format!(
             "  {} Balance: {} SOL ({}{})",
             style("$").yellow(),
-            style(format!("{:.4}", sol)).green(),
+            style(super::format_sol_compact(balance)).green(),
             sign,
-            style(format!("{:.4}", diff_sol)).dim(),
+            style(super::format_sol_compact(abs_diff)).dim(),
         ));
         self.redraw(stdout)
     }
@@ -265,7 +282,7 @@ async fn collect_input(
                                 crossterm::cursor::MoveUp(1),
                                 crossterm::cursor::MoveToColumn(
                                     state.buffer.lines().last().map_or(0, |l| l.len() as u16)
-                                        + 3 // ">> " prompt width
+                                        + 2 // "❯ " prompt width
                                 ),
                             )?;
                         } else {
@@ -310,7 +327,7 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
             println!(
                 "  {} Balance: {} SOL",
                 style("$").yellow(),
-                style(format!("{:.4}", balance as f64 / 1_000_000_000.0)).green(),
+                style(super::format_sol_compact(balance)).green(),
             );
         }
     }
@@ -321,13 +338,7 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
     let balance_handle = if let Some(solana) = agent.solana_payments() {
         let initial = solana.balance().unwrap_or(0);
         let stop = Arc::clone(&balance_stop);
-        let rpc_url = config.payment.rpc_url.clone().unwrap_or_else(|| {
-            match config.payment.network.as_str() {
-                "devnet" => "https://api.devnet.solana.com",
-                "testnet" => "https://api.testnet.solana.com",
-                _ => "https://api.mainnet-beta.solana.com",
-            }.to_string()
-        });
+        let rpc_url = super::resolve_rpc_url(&config.payment.network, config.payment.rpc_url.as_deref());
         let address = solana.address();
         Some(tokio::spawn(balance_monitor(rpc_url, address, initial, bal_tx, stop)))
     } else {
@@ -356,6 +367,7 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
         // Enter raw mode and start terminal event reader for this input
         enable_raw_mode()?;
         crossterm::execute!(io::stdout(), EnableBracketedPaste)?;
+        let _raw_guard = RawModeGuard; // restores terminal on drop (including panic)
         let (term_tx, mut term_rx) = mpsc::channel(64);
         let term_handle = spawn_term_reader(term_tx);
 
@@ -366,9 +378,8 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
         drop(term_rx);
         let _ = term_handle.await;
 
-        // Restore terminal state
-        let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste);
-        let _ = disable_raw_mode();
+        // Restore terminal state (explicit drop before processing input)
+        drop(_raw_guard);
 
         let input = match input_result {
             Ok(InputResult::Text(s)) => s.trim().to_string(),
@@ -487,12 +498,8 @@ async fn handle_request_inner(
 
     // Filter by chain + network: only show providers on the same payment chain and network
     let filter_chain_network = |p: &DiscoveredAgent| -> bool {
-        let meta = match p.card.metadata.as_ref() {
-            Some(m) => m,
-            None => return false,
-        };
-        let agent_chain = meta["chain"].as_str().unwrap_or("solana");
-        let agent_network = meta["network"].as_str().unwrap_or("devnet");
+        let agent_chain = super::extract_chain(p);
+        let agent_network = super::extract_network(p);
         agent_chain.eq_ignore_ascii_case(chain) && agent_network.eq_ignore_ascii_case(network)
     };
     providers.retain(filter_chain_network);
@@ -594,7 +601,7 @@ async fn handle_request_inner(
         println!("     Capabilities: {}", p.card.capabilities.join(", "));
         let fee_note = p.card.metadata.as_ref()
             .and_then(|m| m["protocol_fee_bps"].as_u64())
-            .map(|bps| format!(" (incl. {:.2}% protocol fee)", bps as f64 / 100.0))
+            .map(|bps| format!(" (incl. {} protocol fee)", super::format_bps_percent(bps)))
             .unwrap_or_default();
         println!(
             "     Price: {} SOL{}",
@@ -646,11 +653,12 @@ async fn handle_request_inner(
 
     // Relay tag value limit is typically 1024 bytes (strfry default).
     // Truncate to 950 bytes and strip \r to stay safely under the limit.
-    let job_input = truncate_to_bytes(&input.replace('\r', ""), 950);
+    let job_input = truncate_to_bytes(&input.replace('\r', ""), MAX_JOB_INPUT_BYTES);
     if job_input.len() < input.len() {
         println!(
-            "      {} Input truncated to ~950 bytes for relay tag limit",
+            "      {} Input truncated to ~{} bytes for relay tag limit",
             style("~").dim(),
+            MAX_JOB_INPUT_BYTES,
         );
     }
 
@@ -702,7 +710,7 @@ async fn handle_request_inner(
 
     println!("  {} Waiting for provider response...", style("~").dim());
 
-    let timeout = Duration::from_secs(300);
+    let timeout = Duration::from_secs(RESULT_TIMEOUT_SECS);
     let deadline = tokio::time::Instant::now() + timeout;
 
     loop {
@@ -718,60 +726,97 @@ async fn handle_request_inner(
                 match feedback.parsed_status() {
                     Some(JobStatus::PaymentRequired) => {
                         if let Some(ref pay_req) = feedback.payment_request {
-                            // Parse fee info from request for display
-                            if let Ok(req_data) = serde_json::from_str::<Value>(pay_req) {
-                                let total = req_data["amount"].as_u64().unwrap_or(0);
-                                if let (Some(fee_amt), Some(_fee_addr)) = (
-                                    req_data["fee_amount"].as_u64(),
-                                    req_data["fee_address"].as_str(),
-                                ) {
-                                    let provider_net = total.saturating_sub(fee_amt);
-                                    println!(
-                                        "  {} Payment: {} total → {} provider + {} protocol fee (SOL)",
-                                        style("$").yellow(),
-                                        style(total).bold(),
-                                        provider_net,
-                                        fee_amt,
-                                    );
-                                } else {
-                                    println!("  {} Payment required — paying...", style("$").yellow());
-                                }
-                            } else {
-                                println!("  {} Payment required — paying...", style("$").yellow());
+                            // Reject PaymentRequired from free providers — they shouldn't charge.
+                            if price == 0 {
+                                println!(
+                                    "  {} Rejected: provider advertised free but sent PaymentRequired\n",
+                                    style("!").red(),
+                                );
+                                break;
                             }
 
-                            // Validate fee parameters before paying.
-                            // A malicious provider could embed arbitrary fee_address / fee_amount
-                            // to redirect funds. We enforce the expected protocol treasury and cap.
-                            if let Ok(req_check) = serde_json::from_str::<Value>(pay_req) {
-                                if let Some(fee_addr) = req_check["fee_address"].as_str() {
-                                    if fee_addr != PROTOCOL_TREASURY {
-                                        println!(
-                                            "  {} Rejected: fee_address {} does not match protocol treasury\n",
-                                            style("!").red(),
-                                            fee_addr,
-                                        );
-                                        break;
-                                    }
+                            // THREAT MODEL: Malicious provider fee injection.
+                            // A provider controls the PaymentRequired payload and could:
+                            //   1. Set fee_address to their own wallet (stealing the protocol fee)
+                            //   2. Inflate fee_amount beyond the protocol rate
+                            //   3. Inflate total amount beyond the advertised job price
+                            // We validate all three: fee_address must match PROTOCOL_TREASURY,
+                            // fee_amount must not exceed PROTOCOL_FEE_BPS, and total must
+                            // not exceed advertised price (+1% rounding tolerance).
+                            let req_data = match serde_json::from_str::<Value>(pay_req) {
+                                Ok(v) => v,
+                                Err(_) => {
+                                    println!("  {} Rejected: malformed payment request\n", style("!").red());
+                                    break;
                                 }
-                                if let (Some(fee_amt), Some(total)) = (
-                                    req_check["fee_amount"].as_u64(),
-                                    req_check["amount"].as_u64(),
-                                ) {
-                                    // Allow up to PROTOCOL_FEE_BPS + 1 bps tolerance for rounding
-                                    let max_fee = (total * (PROTOCOL_FEE_BPS + 1)).div_ceil(10_000);
-                                    if fee_amt > max_fee {
-                                        println!(
-                                            "  {} Rejected: fee {} exceeds expected max {} ({}bps of {})\n",
-                                            style("!").red(),
-                                            fee_amt,
-                                            max_fee,
-                                            PROTOCOL_FEE_BPS,
-                                            total,
-                                        );
-                                        break;
-                                    }
+                            };
+
+                            let total = req_data["amount"].as_u64().unwrap_or(0);
+
+                            // Validate total amount vs advertised price (allow up to 1% tolerance for rounding)
+                            if total > 0 {
+                                let max_allowed = price + price / 100;
+                                if total > max_allowed {
+                                    println!(
+                                        "  {} Rejected: requested amount {} exceeds advertised price {} (max {})\n",
+                                        style("!").red(),
+                                        total,
+                                        price,
+                                        max_allowed,
+                                    );
+                                    break;
                                 }
+                            }
+
+                            let has_fee_addr = req_data["fee_address"].as_str().is_some();
+                            let has_fee_amt = req_data["fee_amount"].as_u64().is_some();
+
+                            // Both fee fields must be present together or both absent
+                            if has_fee_addr != has_fee_amt {
+                                println!(
+                                    "  {} Rejected: incomplete fee params (fee_address={}, fee_amount={})\n",
+                                    style("!").red(),
+                                    has_fee_addr,
+                                    has_fee_amt,
+                                );
+                                break;
+                            }
+
+                            if let Some(fee_addr) = req_data["fee_address"].as_str() {
+                                if fee_addr != PROTOCOL_TREASURY {
+                                    println!(
+                                        "  {} Rejected: fee_address {} does not match protocol treasury\n",
+                                        style("!").red(),
+                                        fee_addr,
+                                    );
+                                    break;
+                                }
+                            }
+                            if let Some(fee_amt) = req_data["fee_amount"].as_u64() {
+                                // Allow up to PROTOCOL_FEE_BPS + 1 bps tolerance for rounding
+                                let max_fee = (total * (PROTOCOL_FEE_BPS + 1)).div_ceil(10_000);
+                                if fee_amt > max_fee {
+                                    println!(
+                                        "  {} Rejected: fee {} exceeds expected max {} ({}bps of {})\n",
+                                        style("!").red(),
+                                        fee_amt,
+                                        max_fee,
+                                        PROTOCOL_FEE_BPS,
+                                        total,
+                                    );
+                                    break;
+                                }
+
+                                let provider_net = total.saturating_sub(fee_amt);
+                                println!(
+                                    "  {} Payment: {} total → {} provider + {} protocol fee (lamports)",
+                                    style("$").yellow(),
+                                    style(total).bold(),
+                                    provider_net,
+                                    fee_amt,
+                                );
+                            } else {
+                                println!("  {} Payment required — paying...", style("$").yellow());
                             }
 
                             let payments = match agent.payments.as_ref() {
@@ -828,7 +873,7 @@ async fn handle_request_inner(
                     if let Ok(balance) = solana.balance() {
                         println!(
                             "  Balance: {} SOL\n",
-                            style(format!("{:.4}", balance as f64 / 1_000_000_000.0)).green(),
+                            style(super::format_sol_compact(balance)).green(),
                         );
                     }
                 }
@@ -841,7 +886,7 @@ async fn handle_request_inner(
         }
     }
 
-    RequestOutcome::Done
+    RequestOutcome::Continue
 }
 
 // ── helpers ──────────────────────────────────────────────────────────
@@ -1010,11 +1055,15 @@ struct ScoredProvider {
     reason: String,
 }
 
+/// Maximum providers to send to LLM for scoring (avoids token limit issues).
+const MAX_PROVIDERS_FOR_SCORING: usize = 20;
+
 async fn score_providers(
     llm: &LlmClient,
     request: &str,
     providers: &[DiscoveredAgent],
 ) -> Result<Vec<ScoredProvider>> {
+    let providers = &providers[..providers.len().min(MAX_PROVIDERS_FOR_SCORING)];
     let provider_list: Vec<Value> = providers
         .iter()
         .enumerate()
@@ -1104,7 +1153,7 @@ async fn balance_monitor(
     };
 
     let mut last_balance = initial_balance;
-    let mut interval = tokio::time::interval(Duration::from_secs(5));
+    let mut interval = tokio::time::interval(Duration::from_secs(15));
     loop {
         interval.tick().await;
         if stop.load(Ordering::Relaxed) {
@@ -1124,7 +1173,7 @@ async fn balance_monitor(
     }
 }
 
-/// Format a price in SOL.
+/// Format a price in SOL (4-decimal compact display).
 fn format_price(base_amount: u64) -> String {
-    format!("{:.4}", base_amount as f64 / 1_000_000_000.0)
+    super::format_sol_compact(base_amount)
 }

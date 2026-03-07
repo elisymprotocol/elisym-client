@@ -1,8 +1,11 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 use super::error::{CliError, Result};
 
@@ -11,6 +14,9 @@ use super::error::{CliError, Result};
 pub fn validate_agent_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(CliError::Other("agent name cannot be empty".into()));
+    }
+    if name.len() > 64 {
+        return Err(CliError::Other("agent name must be 64 characters or fewer".into()));
     }
     if name == "." || name == ".." {
         return Err(CliError::Other("invalid agent name".into()));
@@ -26,7 +32,7 @@ pub fn validate_agent_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct AgentConfig {
     pub name: String,
     pub description: String,
@@ -44,6 +50,23 @@ pub struct AgentConfig {
     pub customer_llm: Option<LlmSection>,
     #[serde(default)]
     pub encryption: Option<super::crypto::EncryptionSection>,
+}
+
+// Custom Debug impl to avoid leaking secret keys and API keys in logs.
+impl std::fmt::Debug for AgentConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AgentConfig")
+            .field("name", &self.name)
+            .field("description", &self.description)
+            .field("capabilities", &self.capabilities)
+            .field("relays", &self.relays)
+            .field("secret_key", &"[REDACTED]")
+            .field("payment", &self.payment)
+            .field("llm", &self.llm)
+            .field("customer_llm", &self.customer_llm)
+            .field("encryption", &self.encryption.is_some())
+            .finish()
+    }
 }
 
 impl AgentConfig {
@@ -97,7 +120,7 @@ impl AgentConfig {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct LlmSection {
     pub provider: String,
     pub api_key: String,
@@ -106,12 +129,24 @@ pub struct LlmSection {
     pub max_tokens: u32,
 }
 
+// Custom Debug impl to avoid leaking API keys in logs.
+impl std::fmt::Debug for LlmSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LlmSection")
+            .field("provider", &self.provider)
+            .field("api_key", &"[REDACTED]")
+            .field("model", &self.model)
+            .field("max_tokens", &self.max_tokens)
+            .finish()
+    }
+}
+
 fn default_max_tokens() -> u32 {
     4096
 }
 
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct PaymentSection {
     pub chain: String,
     pub network: String,
@@ -120,6 +155,20 @@ pub struct PaymentSection {
     pub job_price: u64,
     pub payment_timeout_secs: u32,
     pub solana_secret_key: String,
+}
+
+// Custom Debug impl to avoid leaking Solana secret key in logs.
+impl std::fmt::Debug for PaymentSection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaymentSection")
+            .field("chain", &self.chain)
+            .field("network", &self.network)
+            .field("rpc_url", &self.rpc_url)
+            .field("job_price", &self.job_price)
+            .field("payment_timeout_secs", &self.payment_timeout_secs)
+            .field("solana_secret_key", &"[REDACTED]")
+            .finish()
+    }
 }
 
 impl Default for PaymentSection {
@@ -167,7 +216,10 @@ pub fn save_config(config: &AgentConfig) -> Result<()> {
     fs::create_dir_all(&dir)?;
 
     let toml_str = toml::to_string_pretty(config)?;
-    fs::write(config_path(&config.name)?, toml_str)?;
+    let path = config_path(&config.name)?;
+    fs::write(&path, toml_str)?;
+    #[cfg(unix)]
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     Ok(())
 }
 
@@ -178,6 +230,21 @@ pub fn load_config(name: &str) -> Result<AgentConfig> {
         CliError::Other(format!("agent '{}' not found ({})", name, e))
     })?;
     let config: AgentConfig = toml::from_str(&contents)?;
+    Ok(config)
+}
+
+/// Load agent config from disk, stripping all secret material.
+/// Use this for read-only commands (status, list) that don't need secrets.
+pub fn load_config_public(name: &str) -> Result<AgentConfig> {
+    let mut config = load_config(name)?;
+    config.secret_key.zeroize();
+    config.payment.solana_secret_key.zeroize();
+    if let Some(ref mut llm) = config.llm {
+        llm.api_key.zeroize();
+    }
+    if let Some(ref mut cllm) = config.customer_llm {
+        cllm.api_key.zeroize();
+    }
     Ok(config)
 }
 

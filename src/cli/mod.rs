@@ -10,11 +10,15 @@ mod llm;
 mod protocol;
 
 /// Protocol fee in basis points (300 = 3%). Integer-only arithmetic.
+/// Currently hardcoded — will move to on-chain governance in Phase 3.
 pub(crate) const PROTOCOL_FEE_BPS: u64 = 300;
-/// Solana address of the protocol treasury.
+/// Solana address of the protocol treasury that receives the protocol fee.
+/// Currently hardcoded — will move to on-chain governance in Phase 3.
 pub(crate) const PROTOCOL_TREASURY: &str = "GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy";
 /// Solana rent-exempt minimum for a 0-data account (lamports).
 pub(crate) const RENT_EXEMPT_MINIMUM: u64 = 890_880;
+/// Minimum password length for secret key encryption.
+const MIN_PASSWORD_LEN: usize = 8;
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -28,6 +32,8 @@ use nostr_sdk::{Keys, ToBech32};
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
 use tracing::info;
+use zeroize::Zeroizing;
+use elisym_core::{DiscoveredAgent, SolanaNetwork};
 
 use self::args::{Cli, Commands};
 use self::config::{AgentConfig, LlmSection, PaymentSection};
@@ -182,15 +188,15 @@ pub async fn run() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Some(Commands::Init) => cmd_init()?,
+        Some(Commands::Init) => { cmd_init()?; },
         Some(Commands::Start { name, free }) => cmd_start(name, free).await?,
         Some(Commands::List) => cmd_list()?,
         Some(Commands::Status { name }) => cmd_status(&name)?,
         Some(Commands::Delete { name }) => cmd_delete(&name)?,
         Some(Commands::Config { name }) => cmd_config(&name)?,
         Some(Commands::Wallet { name }) => cmd_wallet(&name)?,
-        Some(Commands::Airdrop { name, amount }) => cmd_airdrop(&name, amount)?,
-        Some(Commands::Send { name, address, amount }) => cmd_send(&name, &address, amount)?,
+        Some(Commands::Airdrop { name, amount }) => cmd_airdrop(&name, &amount)?,
+        Some(Commands::Send { name, address, amount }) => cmd_send(&name, &address, &amount)?,
         Some(Commands::Dashboard { chain, network, rpc_url }) => cmd_dashboard(&chain, &network, rpc_url).await?,
         None => {
             // No subcommand — show banner and help
@@ -205,7 +211,7 @@ pub async fn run() -> Result<()> {
 
 // ── init ──────────────────────────────────────────────────────────────
 
-fn cmd_init() -> Result<()> {
+fn cmd_init() -> Result<String> {
     print!("{}", style(banner::BANNER).cyan());
     println!("  {}\n", style("Create a new agent").bold());
     println!("  {}", style("Your agent is an AI that lives on the elisym network.").dim());
@@ -224,7 +230,7 @@ fn cmd_init() -> Result<()> {
     let mut api_key = String::new();
     let mut model = String::new();
     let mut max_tokens: u32 = 4096;
-    let mut encryption_password: Option<String> = None;
+    let mut encryption_password: Option<Zeroizing<String>> = None;
 
     let mut step: usize = 0;
     loop {
@@ -355,9 +361,9 @@ fn cmd_init() -> Result<()> {
                 } else {
                     "OpenAI (GPT)"
                 };
-                let input: String = Input::new()
+                let input: String = Password::new()
                     .with_prompt(format!("{} API key (or \"back\")", label))
-                    .interact_text()?;
+                    .interact()?;
 
                 if input.eq_ignore_ascii_case("back") {
                     step -= 1;
@@ -440,11 +446,15 @@ fn cmd_init() -> Result<()> {
                             .with_prompt("Password")
                             .with_confirmation("Confirm password", "Passwords don't match")
                             .interact()?;
-                        if pw.is_empty() {
-                            println!("  {} Password cannot be empty.", style("!").yellow());
+                        if pw.len() < MIN_PASSWORD_LEN {
+                            println!(
+                                "  {} Password must be at least {} characters.",
+                                style("!").yellow(),
+                                MIN_PASSWORD_LEN,
+                            );
                             continue;
                         }
-                        encryption_password = Some(pw);
+                        encryption_password = Some(Zeroizing::new(pw));
                         step += 1;
                     }
                     1 => {
@@ -508,6 +518,7 @@ fn cmd_init() -> Result<()> {
         cfg.encrypt_secrets(password)?;
     }
     config::save_config(&cfg)?;
+    // encryption_password is zeroized automatically on drop (Zeroizing<String>)
 
     let npub = keys.public_key().to_bech32().unwrap_or_default();
     println!("\n  {} Agent {} created!", style("✓").green().bold(), style(&name).cyan().bold());
@@ -525,17 +536,17 @@ fn cmd_init() -> Result<()> {
     }
     println!("  Start agent      {}\n", style(format!("elisym start {}", name)).cyan());
 
-    Ok(())
+    Ok(name)
 }
 
 // ── config ────────────────────────────────────────────────────────────
 
 fn cmd_config(name: &str) -> Result<()> {
     let mut cfg = config::load_config(name)?;
-    let password = if cfg.is_encrypted() {
-        let p: String = Password::new()
+    let password: Option<Zeroizing<String>> = if cfg.is_encrypted() {
+        let p = Zeroizing::new(Password::new()
             .with_prompt("Password")
-            .interact()?;
+            .interact()?);
         cfg.decrypt_secrets(&p)?;
         Some(p)
     } else {
@@ -685,9 +696,8 @@ fn cmd_config(name: &str) -> Result<()> {
                                     .default(format_sol(cfg.payment.job_price))
                                     .interact_text()?;
 
-                                match input.parse::<f64>() {
-                                    Ok(sol) if sol >= 0.0 => {
-                                        let new_price = sol_to_lamports(sol);
+                                match sol_to_lamports(&input) {
+                                    Some(new_price) => {
                                         if let Some(err) = agent::validate_job_price(new_price) {
                                             println!("  {} {}", style("!").yellow(), err);
                                             continue;
@@ -747,6 +757,8 @@ fn cmd_config(name: &str) -> Result<()> {
         }
     }
 
+    // password is zeroized automatically on drop (Zeroizing<String>)
+
     println!(
         "\n  {} All changes saved for '{}'.",
         style("*").green(),
@@ -779,9 +791,9 @@ fn prompt_llm_section() -> Result<Option<LlmSection>> {
 
     // API key
     let label = provider_options[provider_idx];
-    let api_key: String = Input::new()
+    let api_key: String = Password::new()
         .with_prompt(format!("{} API key", label))
-        .interact_text()?;
+        .interact()?;
     if api_key.is_empty() {
         println!("  {} API key cannot be empty.", style("!").yellow());
         return Ok(None);
@@ -839,11 +851,13 @@ async fn prompt_capabilities_llm(config: &AgentConfig) -> Result<Vec<(String, St
         Return 3-8 capabilities. Return ONLY the JSON, no other text.";
 
     let max_retries = 3;
+    let mut last_err = None;
     let mut response = String::new();
     for attempt in 0..max_retries {
         match llm.complete(system, &description).await {
             Ok(r) => {
                 response = r;
+                last_err = None;
                 break;
             }
             Err(e) => {
@@ -856,12 +870,16 @@ async fn prompt_capabilities_llm(config: &AgentConfig) -> Result<Vec<(String, St
                         attempt + 2,
                         max_retries,
                     );
+                    last_err = Some(e);
                     tokio::time::sleep(std::time::Duration::from_secs(10)).await;
                 } else {
                     return Err(e);
                 }
             }
         }
+    }
+    if let Some(e) = last_err {
+        return Err(e);
     }
 
     // Parse JSON from LLM response (handle possible markdown fencing)
@@ -929,10 +947,10 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
     };
 
     let mut cfg = config::load_config(&name)?;
-    let enc_password = if cfg.is_encrypted() {
-        let p: String = Password::new()
+    let enc_password: Option<Zeroizing<String>> = if cfg.is_encrypted() {
+        let p = Zeroizing::new(Password::new()
             .with_prompt(format!("Password for '{}'", name))
-            .interact()?;
+            .interact()?);
         cfg.decrypt_secrets(&p)?;
         Some(p)
     } else {
@@ -983,6 +1001,8 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
         .default(0)
         .interact()?;
 
+    // enc_password is zeroized automatically on drop (Zeroizing<String>)
+
     println!();
 
     match mode_idx {
@@ -1015,9 +1035,8 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
                     .default(format_sol(cfg.payment.job_price))
                     .interact_text()?;
 
-                match price_input.parse::<f64>() {
-                    Ok(sol) if sol >= 0.0 => {
-                        let new_price = sol_to_lamports(sol);
+                match sol_to_lamports(&price_input) {
+                    Some(new_price) => {
                         if let Some(err) = agent::validate_job_price(new_price) {
                             println!("  {} {}", style("!").yellow(), err);
                             continue;
@@ -1088,9 +1107,7 @@ fn select_or_create_agent() -> Result<String> {
     let agents = config::list_agents()?;
     if agents.is_empty() {
         println!("No agents configured. Running init wizard...\n");
-        cmd_init()?;
-        let agents = config::list_agents()?;
-        return agents.into_iter().next().ok_or_else(|| CliError::Other("no agent created".into()));
+        return cmd_init();
     }
 
     let mut options: Vec<String> = agents.clone();
@@ -1103,9 +1120,7 @@ fn select_or_create_agent() -> Result<String> {
         .interact()?;
 
     if idx == agents.len() {
-        cmd_init()?;
-        let updated = config::list_agents()?;
-        return updated.into_iter().last().ok_or_else(|| CliError::Other("no agent created".into()));
+        return cmd_init();
     }
 
     Ok(agents[idx].clone())
@@ -1122,7 +1137,7 @@ fn cmd_list() -> Result<()> {
 
     println!("{}", style("Configured agents:").bold());
     for name in &agents {
-        match config::load_config(name) {
+        match config::load_config_public(name) {
             Ok(cfg) => {
                 println!(
                     "  {} — {} [{}]",
@@ -1142,7 +1157,7 @@ fn cmd_list() -> Result<()> {
 // ── status ────────────────────────────────────────────────────────────
 
 fn cmd_status(name: &str) -> Result<()> {
-    let cfg = config::load_config(name)?;
+    let cfg = config::load_config_public(name)?;
 
     println!("{}", style(format!("Agent: {}", cfg.name)).bold());
     println!("  description:  {}", cfg.description);
@@ -1213,7 +1228,7 @@ fn cmd_wallet(name: &str) -> Result<()> {
 
 // ── airdrop ──────────────────────────────────────────────────────────
 
-fn cmd_airdrop(name: &str, amount: f64) -> Result<()> {
+fn cmd_airdrop(name: &str, amount: &str) -> Result<()> {
     let mut cfg = config::load_config(name)?;
     if cfg.is_encrypted() {
         unlock_config(&mut cfg)?;
@@ -1225,10 +1240,11 @@ fn cmd_airdrop(name: &str, amount: f64) -> Result<()> {
 
     let solana = agent::build_solana_provider(&cfg)?;
 
-    let lamports = sol_to_lamports(amount);
+    let lamports = sol_to_lamports(amount)
+        .ok_or_else(|| CliError::Other(format!("invalid SOL amount: {}", amount)))?;
     println!(
         "  Requesting airdrop of {} SOL ({} lamports) on {}...",
-        amount, lamports, cfg.payment.network
+        format_sol_compact(lamports), lamports, cfg.payment.network
     );
 
     let sig = solana.request_airdrop(lamports)?;
@@ -1250,16 +1266,40 @@ fn cmd_airdrop(name: &str, amount: f64) -> Result<()> {
 
 // ── send ─────────────────────────────────────────────────────────────
 
-fn cmd_send(name: &str, address: &str, amount: f64) -> Result<()> {
+fn cmd_send(name: &str, address: &str, amount: &str) -> Result<()> {
     let mut cfg = config::load_config(name)?;
     if cfg.is_encrypted() {
         unlock_config(&mut cfg)?;
     }
 
+    // Validate destination address early
+    let dest_pubkey: solana_sdk::pubkey::Pubkey = address
+        .parse()
+        .map_err(|_| CliError::Other(format!("invalid Solana address: {}", address)))?;
+
     let solana = agent::build_solana_provider(&cfg)?;
 
+    // Self-transfer warning
+    let own_address = solana.address();
+    if dest_pubkey.to_string() == own_address {
+        println!(
+            "  {} Destination is the agent's own wallet ({})",
+            style("!").yellow().bold(),
+            style(&own_address).dim(),
+        );
+        let proceed = Confirm::new()
+            .with_prompt("Send to yourself?")
+            .default(false)
+            .interact()?;
+        if !proceed {
+            println!("  Cancelled.");
+            return Ok(());
+        }
+    }
+
     // Convert SOL to lamports
-    let base_amount = sol_to_lamports(amount);
+    let base_amount = sol_to_lamports(amount)
+        .ok_or_else(|| CliError::Other(format!("invalid SOL amount: {}", amount)))?;
     let unit_label = "SOL";
 
     // Show current balance
@@ -1267,7 +1307,7 @@ fn cmd_send(name: &str, address: &str, amount: f64) -> Result<()> {
     println!("  Balance: {} SOL ({} lamports)", format_sol(balance), balance);
     println!(
         "  Sending {} {} to {}",
-        style(amount).bold(),
+        style(format_sol_compact(base_amount)).bold(),
         unit_label,
         style(address).dim()
     );
@@ -1284,10 +1324,11 @@ fn cmd_send(name: &str, address: &str, amount: f64) -> Result<()> {
 
     // Use a dummy reference key (not needed for direct sends, but required by the format)
     let reference = Keypair::new().pubkey().to_string();
-    let request_json = format!(
-        r#"{{"recipient":"{}","amount":{},"reference":"{}"}}"#,
-        address, base_amount, reference
-    );
+    let request_json = serde_json::json!({
+        "recipient": address,
+        "amount": base_amount,
+        "reference": reference,
+    }).to_string();
 
     use elisym_core::PaymentProvider;
     match solana.pay(&request_json) {
@@ -1295,7 +1336,7 @@ fn cmd_send(name: &str, address: &str, amount: f64) -> Result<()> {
             println!(
                 "\n  {} Sent {} {}",
                 style("*").green(),
-                style(amount).bold(),
+                style(format_sol_compact(base_amount)).bold(),
                 unit_label
             );
             println!("  Signature: {}", style(&result.payment_id).dim());
@@ -1342,13 +1383,87 @@ async fn cmd_dashboard(chain: &str, network: &str, rpc_url: Option<String>) -> R
     dashboard::run_dashboard(chain.to_string(), network.to_string(), rpc_url).await
 }
 
+/// Format lamports as SOL with full 9-decimal precision (integer-only arithmetic).
 fn format_sol(lamports: u64) -> String {
-    format!("{:.9}", lamports as f64 / 1_000_000_000.0)
+    let whole = lamports / 1_000_000_000;
+    let frac = lamports % 1_000_000_000;
+    format!("{}.{:09}", whole, frac)
 }
 
-/// Convert a SOL f64 amount to lamports with rounding (avoids truncation errors).
-fn sol_to_lamports(sol: f64) -> u64 {
-    (sol * 1_000_000_000.0).round() as u64
+/// Format lamports as SOL with 4-decimal compact display (integer-only arithmetic).
+pub(crate) fn format_sol_compact(lamports: u64) -> String {
+    let whole = lamports / 1_000_000_000;
+    let frac = (lamports % 1_000_000_000) / 100_000;
+    format!("{}.{:04}", whole, frac)
+}
+
+/// Format basis points as a percentage string (e.g., 300 bps → "3.00%").
+pub(crate) fn format_bps_percent(bps: u64) -> String {
+    let whole = bps / 100;
+    let frac = bps % 100;
+    format!("{}.{:02}%", whole, frac)
+}
+
+/// Parse a SOL amount string (e.g. "1.5") into lamports using integer-only arithmetic.
+/// Returns None for invalid input, zero/negative amounts, or > 9 decimal places.
+fn sol_to_lamports(sol_str: &str) -> Option<u64> {
+    let s = sol_str.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = s.splitn(2, '.').collect();
+    let whole: u64 = parts[0].parse().ok()?;
+    let frac: u64 = if parts.len() == 2 {
+        let frac_str = parts[1];
+        if frac_str.is_empty() || frac_str.len() > 9 {
+            return None;
+        }
+        let padded = format!("{:0<9}", frac_str);
+        padded.parse().ok()?
+    } else {
+        0
+    };
+    whole.checked_mul(1_000_000_000)?.checked_add(frac)
+}
+
+/// Parse a network name string into the elisym-core SolanaNetwork enum.
+pub(crate) fn parse_network(s: &str) -> SolanaNetwork {
+    match s {
+        "mainnet" => SolanaNetwork::Mainnet,
+        "testnet" => SolanaNetwork::Testnet,
+        "devnet" => SolanaNetwork::Devnet,
+        other => SolanaNetwork::Custom(other.to_string()),
+    }
+}
+
+/// Resolve a Solana RPC URL from the network name, using a custom URL if provided.
+pub(crate) fn resolve_rpc_url(network: &str, custom: Option<&str>) -> String {
+    if let Some(url) = custom {
+        return url.to_string();
+    }
+    parse_network(network).rpc_url()
+}
+
+/// Extract the payment chain from a discovered agent's metadata.
+pub(crate) fn extract_chain(agent: &DiscoveredAgent) -> String {
+    agent
+        .card
+        .metadata
+        .as_ref()
+        .and_then(|m| m["chain"].as_str())
+        .unwrap_or("solana")
+        .to_string()
+}
+
+/// Extract the payment network from a discovered agent's metadata.
+pub(crate) fn extract_network(agent: &DiscoveredAgent) -> String {
+    agent
+        .card
+        .metadata
+        .as_ref()
+        .and_then(|m| m["network"].as_str())
+        .unwrap_or("devnet")
+        .to_string()
 }
 
 /// Extract job price from a DiscoveredAgent's card metadata.
@@ -1368,20 +1483,22 @@ fn unlock_config(cfg: &mut config::AgentConfig) -> Result<()> {
     }
     let max_attempts = 3;
     for attempt in 1..=max_attempts {
-        let password: String = Password::new()
+        let password = Zeroizing::new(Password::new()
             .with_prompt("Password")
-            .interact()?;
+            .interact()?);
         match cfg.decrypt_secrets(&password) {
             Ok(()) => return Ok(()),
-            Err(_) if attempt < max_attempts => {
+            Err(e) if attempt == max_attempts => return Err(e),
+            Err(_) => {
                 println!(
                     "  {} Wrong password ({}/{})",
                     style("!").yellow(),
                     attempt,
                     max_attempts,
                 );
+                // Throttle brute-force attempts
+                std::thread::sleep(std::time::Duration::from_secs(1));
             }
-            Err(e) => return Err(e),
         }
     }
     unreachable!()
@@ -1389,7 +1506,7 @@ fn unlock_config(cfg: &mut config::AgentConfig) -> Result<()> {
 
 /// Save config, re-encrypting secrets if a password is provided.
 /// Encrypts → saves → decrypts back so the in-memory config stays usable.
-fn save_config_encrypted(cfg: &mut config::AgentConfig, password: &Option<String>) -> Result<()> {
+fn save_config_encrypted(cfg: &mut config::AgentConfig, password: &Option<Zeroizing<String>>) -> Result<()> {
     if let Some(ref p) = password {
         cfg.encrypt_secrets(p)?;
         config::save_config(cfg)?;
