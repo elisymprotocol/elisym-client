@@ -43,7 +43,6 @@ async fn main() -> Result<()> {
     let solana_config = SolanaPaymentConfig {
         network: SolanaNetwork::Devnet,
         rpc_url: None,
-        token: SolanaToken::Sol,
     };
     let solana_provider = SolanaPaymentProvider::new(solana_config, keypair);
 
