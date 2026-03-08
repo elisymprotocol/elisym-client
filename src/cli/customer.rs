@@ -1131,7 +1131,9 @@ async fn balance_monitor(
             break;
         }
         let rpc = Arc::clone(&rpc);
-        let balance_result = tokio::task::spawn_blocking(move || rpc.get_balance(&pubkey)).await;
+        let balance_result = tokio::task::spawn_blocking(move || {
+            rpc.get_balance(&pubkey).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send>)
+        }).await;
         if let Ok(Ok(balance)) = balance_result {
             if balance != last_balance {
                 let prev = last_balance;
