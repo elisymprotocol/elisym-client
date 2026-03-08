@@ -819,7 +819,8 @@ fn spawn_job_results(
     tokio::spawn(async move {
         let result_kind = Kind::from(elisym_core::KIND_JOB_RESULT_BASE + elisym_core::DEFAULT_KIND_OFFSET);
         let mut seen = std::collections::HashSet::new();
-        let mut since_ts = nostr_sdk::Timestamp::now();
+        // Start from the beginning to capture all historical earnings
+        let mut since_ts = nostr_sdk::Timestamp::from(0);
         let mut interval = tokio::time::interval(Duration::from_secs(15));
 
         loop {

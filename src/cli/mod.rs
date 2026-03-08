@@ -832,13 +832,10 @@ async fn prompt_capabilities_llm(config: &AgentConfig) -> Result<Vec<(String, St
         .ok_or_else(|| CliError::Llm("no LLM configured — run `elisym init` to set up".into()))?;
     let llm = llm::LlmClient::new(llm_section)?;
 
-    let description: String = Input::new()
-        .with_prompt("Describe what your agent can do (or \"back\")")
-        .interact_text()?;
-
-    if description.eq_ignore_ascii_case("back") {
-        return Ok(vec![]);
-    }
+    let description = match prompt_paste_aware("Describe what your agent can do (or \"back\")")? {
+        Some(s) if !s.is_empty() && !s.eq_ignore_ascii_case("back") => s,
+        _ => return Ok(vec![]),
+    };
 
     println!("  {} Analyzing capabilities...", style("~").dim());
 
@@ -1385,6 +1382,80 @@ fn sol_to_lamports(sol_str: &str) -> Option<u64> {
         0
     };
     whole.checked_mul(1_000_000_000)?.checked_add(frac)
+}
+
+/// Paste-aware single-line prompt using crossterm raw mode.
+/// Handles bracketed paste and fallback paste detection (50ms timeout on Enter).
+/// Returns the trimmed input string, or None if the user pressed Ctrl+C / Ctrl+D.
+fn prompt_paste_aware(prompt: &str) -> Result<Option<String>> {
+    use std::io::{self, Write};
+    use crossterm::{
+        event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
+        execute,
+        event::{EnableBracketedPaste, DisableBracketedPaste},
+        terminal,
+    };
+
+    print!("{}: ", style(prompt).bold());
+    io::stdout().flush()?;
+
+    terminal::enable_raw_mode()?;
+    execute!(io::stdout(), EnableBracketedPaste)?;
+
+    let mut buffer = String::new();
+    let result = loop {
+        let ev = match event::read() {
+            Ok(ev) => ev,
+            Err(e) => {
+                terminal::disable_raw_mode()?;
+                execute!(io::stdout(), DisableBracketedPaste)?;
+                return Err(e.into());
+            }
+        };
+        match ev {
+            Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) => match code {
+                KeyCode::Enter => {
+                    // Paste detection: if more input arrives within 50ms, treat Enter as
+                    // part of a paste and convert to space (single-line prompt).
+                    if event::poll(std::time::Duration::from_millis(50))? {
+                        buffer.push(' ');
+                        execute!(io::stdout(), crossterm::style::Print(" "))?;
+                    } else {
+                        break Some(buffer);
+                    }
+                }
+                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    break None;
+                }
+                KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
+                    if buffer.is_empty() { break None; }
+                }
+                KeyCode::Char(c) => {
+                    buffer.push(c);
+                    execute!(io::stdout(), crossterm::style::Print(c.to_string()))?;
+                }
+                KeyCode::Backspace => {
+                    if buffer.pop().is_some() {
+                        execute!(io::stdout(), crossterm::style::Print("\x08 \x08"))?;
+                    }
+                }
+                _ => {}
+            },
+            Event::Paste(text) => {
+                // Flatten pasted newlines to spaces (single-line prompt)
+                let clean = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
+                buffer.push_str(&clean);
+                execute!(io::stdout(), crossterm::style::Print(&clean))?;
+            }
+            _ => {}
+        }
+    };
+
+    terminal::disable_raw_mode()?;
+    execute!(io::stdout(), DisableBracketedPaste)?;
+    println!(); // newline after input
+
+    Ok(result.map(|s| s.trim().to_string()))
 }
 
 /// Parse a network name string into the elisym-core SolanaNetwork enum.

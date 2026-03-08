@@ -8,6 +8,7 @@ use console::style;
 use crossterm::event::{
     self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     EnableBracketedPaste, DisableBracketedPaste,
+    KeyboardEnhancementFlags, PushKeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
 };
 use crossterm::style::Print;
 use crossterm::terminal::{enable_raw_mode, disable_raw_mode};
@@ -47,7 +48,11 @@ struct RawModeGuard;
 
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
-        let _ = crossterm::execute!(io::stdout(), DisableBracketedPaste);
+        let _ = crossterm::execute!(
+            io::stdout(),
+            DisableBracketedPaste,
+            PopKeyboardEnhancementFlags,
+        );
         let _ = disable_raw_mode();
     }
 }
@@ -85,11 +90,6 @@ fn spawn_term_reader(tx: mpsc::Sender<io::Result<Event>>) -> tokio::task::JoinHa
     })
 }
 
-/// Get terminal width, defaulting to 80 if unavailable.
-fn term_width() -> u16 {
-    crossterm::terminal::size().map(|(w, _)| w).unwrap_or(80)
-}
-
 /// State for the current input line(s), including an optional balance status line.
 /// All terminal output during input collection goes through this struct, ensuring
 /// no concurrent writes to stdout.
@@ -106,14 +106,13 @@ impl InputState {
         }
     }
 
-    /// Number of screen rows occupied: top border + balance (if any) + prompt + buffer lines + bottom border.
+    /// Number of screen rows occupied: balance (if any) + prompt + buffer lines.
     fn display_rows(&self) -> u16 {
-        let mut rows: u16 = 2; // top border + prompt line
+        let mut rows: u16 = 1; // prompt line
         rows += self.buffer.matches('\n').count() as u16;
         if self.balance_line.is_some() {
             rows += 1;
         }
-        rows += 1; // bottom border
         rows
     }
 
@@ -129,21 +128,14 @@ impl InputState {
             crossterm::terminal::Clear(crossterm::terminal::ClearType::FromCursorDown),
         )?;
 
-        let w = term_width() as usize;
-        // Top border
-        write!(stdout, "{}\r\n", style("─".repeat(w)).dim())?;
         if let Some(ref bal) = self.balance_line {
             write!(stdout, "{}\r\n", bal)?;
         }
         // Prompt + buffer
-        write!(stdout, "{} ", style("❯").cyan().bold())?;
+        write!(stdout, "{} ", style("❯").white().bold())?;
         if !self.buffer.is_empty() {
             write!(stdout, "{}", self.buffer.replace('\n', "\r\n"))?;
         }
-        // Save cursor, print bottom border, restore cursor
-        crossterm::execute!(stdout, crossterm::cursor::SavePosition)?;
-        write!(stdout, "\r\n{}", style("─".repeat(w)).dim())?;
-        crossterm::execute!(stdout, crossterm::cursor::RestorePosition)?;
         stdout.flush()?;
         Ok(())
     }
@@ -185,15 +177,6 @@ async fn collect_input(
     let mut state = InputState::new();
     let mut stdout = io::stdout();
     let mut pending: VecDeque<Event> = VecDeque::new();
-
-    // Draw initial bottom border
-    {
-        let w = term_width() as usize;
-        crossterm::execute!(stdout, crossterm::cursor::SavePosition)?;
-        write!(stdout, "\r\n{}", style("─".repeat(w)).dim())?;
-        crossterm::execute!(stdout, crossterm::cursor::RestorePosition)?;
-        stdout.flush()?;
-    }
 
     loop {
         let ev = if let Some(ev) = pending.pop_front() {
@@ -242,31 +225,18 @@ async fn collect_input(
                         Ok(Some(Err(e))) => return Err(e),
                         _ => {
                             // Timeout or channel closed → real submit
-                            // Move past bottom border, then clear it
-                            crossterm::execute!(
-                                stdout,
-                                Print("\r\n"),
-                                crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-                            )?;
+                            crossterm::execute!(stdout, Print("\r\n"))?;
                             return Ok(InputResult::Text(state.buffer));
                         }
                     }
                 }
                 KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    crossterm::execute!(
-                        stdout,
-                        Print("\r\n"),
-                        crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-                    )?;
+                    crossterm::execute!(stdout, Print("\r\n"))?;
                     return Ok(InputResult::Interrupted);
                 }
                 KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
                     if state.buffer.is_empty() {
-                        crossterm::execute!(
-                            stdout,
-                            Print("\r\n"),
-                            crossterm::terminal::Clear(crossterm::terminal::ClearType::CurrentLine),
-                        )?;
+                        crossterm::execute!(stdout, Print("\r\n"))?;
                         return Ok(InputResult::Eof);
                     }
                 }
@@ -351,22 +321,23 @@ pub async fn run_customer_repl(mut agent: AgentNode, config: &AgentConfig) -> Re
     println!(
         "  {} {}\n",
         style("~").dim(),
-        style("Ctrl+J for new line · Enter to send · paste supported").dim(),
+        style("Shift+Enter / Ctrl+J for new line · Enter to send · paste supported").dim(),
     );
 
     loop {
-        // Print input box with borders
+        // Print prompt
         {
-            let w = term_width() as usize;
-            println!("{}", style("─".repeat(w)).dim());
-            print!("{} ", style("❯").cyan().bold());
+            print!("{} ", style("❯").white().bold());
             io::stdout().flush()?;
-            // Bottom border is drawn by InputState::redraw once raw mode starts
         }
 
         // Enter raw mode and start terminal event reader for this input
         enable_raw_mode()?;
-        crossterm::execute!(io::stdout(), EnableBracketedPaste)?;
+        crossterm::execute!(
+            io::stdout(),
+            EnableBracketedPaste,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES),
+        )?;
         let _raw_guard = RawModeGuard; // restores terminal on drop (including panic)
         let (term_tx, mut term_rx) = mpsc::channel(64);
         let term_handle = spawn_term_reader(term_tx);
