@@ -4,6 +4,25 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Scrollbar, Scrollba
 use super::{App, Focus, JobStatus, Screen};
 use crate::util::format_sol_compact;
 
+// ── Theme helpers ──
+// Use only ANSI colors + modifiers so the terminal palette handles light/dark.
+// `Color::Reset` = terminal's default fg/bg — always readable.
+
+/// Default foreground: inherits terminal color.
+const FG: Color = Color::Reset;
+/// Muted/secondary text: uses Modifier::DIM on default fg.
+fn muted() -> Style {
+    Style::default().add_modifier(Modifier::DIM)
+}
+/// Accent: cyan from terminal palette.
+const ACCENT: Color = Color::Cyan;
+/// Success: green from terminal palette.
+const OK: Color = Color::Green;
+/// Warning/money: yellow from terminal palette.
+const WARN: Color = Color::Yellow;
+/// Error: red from terminal palette.
+const ERR: Color = Color::Red;
+
 pub fn render(f: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Main => render_main(f, app),
@@ -31,29 +50,29 @@ fn render_main(f: &mut Frame, app: &mut App) {
         format!("{} SOL", format_sol_compact(app.price))
     };
     let header_line1 = Line::from(vec![
-        Span::styled("  ⚡ ELISYM", Style::default().fg(Color::Yellow).bold()),
-        Span::styled("  agent: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&app.agent_name, Style::default().fg(Color::White).bold()),
-        Span::styled("  skill: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(&app.skill_name, Style::default().fg(Color::Cyan).bold()),
+        Span::styled("  ⚡ ELISYM", Style::default().fg(WARN).bold()),
+        Span::styled("  agent: ", muted()),
+        Span::styled(&app.agent_name, Style::default().fg(FG).bold()),
+        Span::styled("  skill: ", muted()),
+        Span::styled(&app.skill_name, Style::default().fg(ACCENT).bold()),
     ]);
     let header_line2 = Line::from(vec![
-        Span::styled("     price: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("     price: ", muted()),
         Span::styled(
             &price_str,
             if app.free_mode {
-                Style::default().fg(Color::Yellow).bold()
+                Style::default().fg(WARN).bold()
             } else {
-                Style::default().fg(Color::Green).bold()
+                Style::default().fg(OK).bold()
             },
         ),
-        Span::styled("  wallet: ", Style::default().fg(Color::DarkGray)),
+        Span::styled("  wallet: ", muted()),
         Span::styled(
             format!("{} SOL", format_sol_compact(app.wallet_balance)),
-            Style::default().fg(Color::Green),
+            Style::default().fg(OK),
         ),
         Span::styled("  ", Style::default()),
-        Span::styled(&app.network, Style::default().fg(Color::Cyan)),
+        Span::styled(&app.network, Style::default().fg(ACCENT)),
     ]);
     let header = Paragraph::new(vec![header_line1, header_line2]);
     f.render_widget(header, chunks[0]);
@@ -61,9 +80,9 @@ fn render_main(f: &mut Frame, app: &mut App) {
     // ── Job table ──
     let table_focus = matches!(app.focus, Focus::Table);
     let table_border_style = if table_focus {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(ACCENT)
     } else {
-        Style::default().fg(Color::DarkGray)
+        muted()
     };
 
     let job_count = app.jobs.len();
@@ -77,7 +96,7 @@ fn render_main(f: &mut Frame, app: &mut App) {
     };
 
     let header_row = Row::new(vec![
-        Cell::from(" # ").style(Style::default().fg(Color::DarkGray)),
+        Cell::from(" # "),
         Cell::from("Job ID"),
         Cell::from("From"),
         Cell::from("Status"),
@@ -85,7 +104,7 @@ fn render_main(f: &mut Frame, app: &mut App) {
         Cell::from("  Time"),
         Cell::from("    SOL"),
     ])
-    .style(Style::default().bold().fg(Color::White))
+    .style(Style::default().bold().fg(FG))
     .bottom_margin(0);
 
     let rows: Vec<Row> = app
@@ -121,28 +140,29 @@ fn render_main(f: &mut Frame, app: &mut App) {
                 .unwrap_or_else(|| "   --".into());
 
             let (status_text, status_style) = match &job.status {
-                JobStatus::PaymentPending => ("$ Awaiting", Style::default().fg(Color::Yellow)),
-                JobStatus::Processing => ("⚙ Running", Style::default().fg(Color::Cyan)),
-                JobStatus::Completed => ("✓ Done", Style::default().fg(Color::Green)),
-                JobStatus::Failed(_) => ("✗ Failed", Style::default().fg(Color::Red)),
+                JobStatus::PaymentPending => ("$ Awaiting", Style::default().fg(WARN)),
+                JobStatus::Processing => ("⚙ Running", Style::default().fg(ACCENT)),
+                JobStatus::Completed => ("✓ Done", Style::default().fg(OK)),
+                JobStatus::Failed(_) => ("✗ Failed", Style::default().fg(ERR)),
             };
 
             let skill_str = job.skill_name.as_deref().unwrap_or("—");
 
+            // Alternate rows: dim modifier instead of hardcoded RGB background
             let row_style = if i % 2 == 1 {
-                Style::default().bg(Color::Rgb(30, 30, 40))
+                muted()
             } else {
                 Style::default()
             };
 
             Row::new(vec![
-                Cell::from(format!("{:>2}", i + 1)).style(Style::default().fg(Color::DarkGray)),
-                Cell::from(short_id).style(Style::default().fg(Color::White)),
-                Cell::from(short_customer).style(Style::default().fg(Color::DarkGray)),
+                Cell::from(format!("{:>2}", i + 1)).style(muted()),
+                Cell::from(short_id).style(Style::default().fg(FG)),
+                Cell::from(short_customer).style(muted()),
                 Cell::from(status_text).style(status_style),
-                Cell::from(skill_str).style(Style::default().fg(Color::Cyan)),
-                Cell::from(time_str).style(Style::default().fg(Color::DarkGray)),
-                Cell::from(format!("{:>7}", sol_str)).style(Style::default().fg(Color::Yellow)),
+                Cell::from(skill_str).style(Style::default().fg(ACCENT)),
+                Cell::from(time_str).style(muted()),
+                Cell::from(format!("{:>7}", sol_str)).style(Style::default().fg(WARN)),
             ])
             .style(row_style)
         })
@@ -169,8 +189,7 @@ fn render_main(f: &mut Frame, app: &mut App) {
     )
     .row_highlight_style(
         Style::default()
-            .bg(Color::Rgb(40, 50, 70))
-            .fg(Color::White)
+            .add_modifier(Modifier::REVERSED)
             .add_modifier(Modifier::BOLD),
     );
 
@@ -180,7 +199,7 @@ fn render_main(f: &mut Frame, app: &mut App) {
     if app.jobs.is_empty() {
         let inner = chunks[1].inner(Margin::new(1, 1));
         let empty = Paragraph::new("  Waiting for jobs…")
-            .style(Style::default().fg(Color::DarkGray).italic())
+            .style(muted().add_modifier(Modifier::ITALIC))
             .alignment(Alignment::Left);
         // Render below the header row
         if inner.height > 2 {
@@ -197,9 +216,9 @@ fn render_main(f: &mut Frame, app: &mut App) {
     // ── Logs ──
     let log_focus = matches!(app.focus, Focus::Log);
     let log_border_style = if log_focus {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(ACCENT)
     } else {
-        Style::default().fg(Color::DarkGray)
+        muted()
     };
 
     let log_lines: Vec<Line> = app
@@ -207,9 +226,9 @@ fn render_main(f: &mut Frame, app: &mut App) {
         .iter()
         .map(|l| {
             Line::from(vec![
-                Span::styled(format!("  {} ", l.time), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {} ", l.time), muted()),
                 Span::styled(format!("{} ", l.icon), icon_style(l.icon)),
-                Span::raw(&l.message),
+                Span::styled(&l.message, Style::default().fg(FG)),
             ])
         })
         .collect();
@@ -251,23 +270,23 @@ fn render_main(f: &mut Frame, app: &mut App) {
     // ── Help bar ──
     let sound_label = if app.sound_enabled { "sound:on" } else { "sound:off" };
     let help = Line::from(vec![
-        Span::styled("  ↑↓", Style::default().fg(Color::White).bold()),
-        Span::styled(" select  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter", Style::default().fg(Color::White).bold()),
-        Span::styled(" detail  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Tab", Style::default().fg(Color::White).bold()),
-        Span::styled(" switch pane  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("s", Style::default().fg(Color::White).bold()),
+        Span::styled("  ↑↓", Style::default().fg(FG).bold()),
+        Span::styled(" select  ", muted()),
+        Span::styled("Enter", Style::default().fg(FG).bold()),
+        Span::styled(" detail  ", muted()),
+        Span::styled("Tab", Style::default().fg(FG).bold()),
+        Span::styled(" switch pane  ", muted()),
+        Span::styled("s", Style::default().fg(FG).bold()),
         Span::styled(
             format!(" {}  ", sound_label),
             if app.sound_enabled {
-                Style::default().fg(Color::Green)
+                Style::default().fg(OK)
             } else {
-                Style::default().fg(Color::DarkGray)
+                muted()
             },
         ),
-        Span::styled("q", Style::default().fg(Color::White).bold()),
-        Span::styled(" quit", Style::default().fg(Color::DarkGray)),
+        Span::styled("q", Style::default().fg(FG).bold()),
+        Span::styled(" quit", muted()),
     ]);
     f.render_widget(Paragraph::new(help), chunks[3]);
 }
@@ -323,42 +342,42 @@ fn render_detail(f: &mut Frame, app: &mut App, job_idx: usize) {
 
     let info_text = vec![
         Line::from(vec![
-            Span::styled("  From:     ", Style::default().fg(Color::DarkGray)),
-            Span::raw(&job.customer_id),
+            Span::styled("  From:     ", muted()),
+            Span::styled(&job.customer_id, Style::default().fg(FG)),
         ]),
         Line::from(vec![
-            Span::styled("  Status:   ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Status:   ", muted()),
             Span::styled(
                 job.status.to_string(),
                 match &job.status {
-                    JobStatus::PaymentPending => Style::default().fg(Color::Yellow),
-                    JobStatus::Processing => Style::default().fg(Color::Cyan),
-                    JobStatus::Completed => Style::default().fg(Color::Green),
-                    JobStatus::Failed(_) => Style::default().fg(Color::Red),
+                    JobStatus::PaymentPending => Style::default().fg(WARN),
+                    JobStatus::Processing => Style::default().fg(ACCENT),
+                    JobStatus::Completed => Style::default().fg(OK),
+                    JobStatus::Failed(_) => Style::default().fg(ERR),
                 },
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Skill:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Skill:    ", muted()),
             Span::styled(
                 job.skill_name.as_deref().unwrap_or("—"),
-                Style::default().fg(Color::Cyan),
+                Style::default().fg(ACCENT),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Input:    ", Style::default().fg(Color::DarkGray)),
-            Span::raw(input_preview),
+            Span::styled("  Input:    ", muted()),
+            Span::styled(input_preview, Style::default().fg(FG)),
         ]),
         Line::from(vec![
-            Span::styled("  Price:    ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  Price:    ", muted()),
             Span::styled(
                 format!("{}{}", price_str, net_str),
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(WARN),
             ),
         ]),
         Line::from(vec![
-            Span::styled("  Duration: ", Style::default().fg(Color::DarkGray)),
-            Span::raw(duration_str),
+            Span::styled("  Duration: ", muted()),
+            Span::styled(duration_str, Style::default().fg(FG)),
         ]),
     ];
 
@@ -371,7 +390,7 @@ fn render_detail(f: &mut Frame, app: &mut App, job_idx: usize) {
     let info = Paragraph::new(info_text).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
+            .border_style(Style::default().fg(ACCENT))
             .title(format!(" Job {} ", short_id))
             .title_bottom(" Esc to back "),
     );
@@ -383,9 +402,9 @@ fn render_detail(f: &mut Frame, app: &mut App, job_idx: usize) {
         .iter()
         .map(|l| {
             Line::from(vec![
-                Span::styled(format!("  {} ", l.time), Style::default().fg(Color::DarkGray)),
+                Span::styled(format!("  {} ", l.time), muted()),
                 Span::styled(format!("{} ", l.icon), icon_style(l.icon)),
-                Span::raw(&l.message),
+                Span::styled(&l.message, Style::default().fg(FG)),
             ])
         })
         .collect();
@@ -401,7 +420,7 @@ fn render_detail(f: &mut Frame, app: &mut App, job_idx: usize) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Cyan))
+                .border_style(Style::default().fg(ACCENT))
                 .title(" Events "),
         )
         .scroll((app.detail_scroll, 0));
@@ -420,23 +439,22 @@ fn render_detail(f: &mut Frame, app: &mut App, job_idx: usize) {
 
     // ── Help ──
     let help = Line::from(vec![
-        Span::styled("  Esc", Style::default().fg(Color::White).bold()),
-        Span::styled(" back  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("↑↓", Style::default().fg(Color::White).bold()),
-        Span::styled(" scroll", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Esc", Style::default().fg(FG).bold()),
+        Span::styled(" back  ", muted()),
+        Span::styled("↑↓", Style::default().fg(FG).bold()),
+        Span::styled(" scroll", muted()),
     ]);
     f.render_widget(Paragraph::new(help), chunks[2]);
 }
 
 fn icon_style(icon: &str) -> Style {
     match icon {
-        "▶" => Style::default().fg(Color::Cyan),
-        "$" => Style::default().fg(Color::Yellow),
-        "✓" => Style::default().fg(Color::Green),
-        "✗" => Style::default().fg(Color::Red),
-        "⚙" => Style::default().fg(Color::Cyan),
-        "→" | "←" => Style::default().fg(Color::DarkGray),
-        "↔" => Style::default().fg(Color::DarkGray),
+        "▶" => Style::default().fg(ACCENT),
+        "$" => Style::default().fg(WARN),
+        "✓" => Style::default().fg(OK),
+        "✗" => Style::default().fg(ERR),
+        "⚙" => Style::default().fg(ACCENT),
+        "→" | "←" | "↔" => muted(),
         _ => Style::default(),
     }
 }
