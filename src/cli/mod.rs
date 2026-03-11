@@ -3,22 +3,12 @@ mod args;
 mod banner;
 pub(crate) mod config;
 pub(crate) mod crypto;
-mod customer;
-mod dashboard;
 pub(crate) mod error;
-mod llm;
-mod protocol;
+pub(crate) mod llm;
+pub(crate) mod protocol;
 
-/// Protocol fee in basis points (300 = 3%). Integer-only arithmetic.
-/// Currently hardcoded — will move to on-chain governance in Phase 3.
-pub(crate) const PROTOCOL_FEE_BPS: u64 = 300;
-/// Solana address of the protocol treasury that receives the protocol fee.
-/// Currently hardcoded — will move to on-chain governance in Phase 3.
-pub(crate) const PROTOCOL_TREASURY: &str = "GY7vnWMkKpftU4nQ16C2ATkj1JwrQpHhknkaBUn67VTy";
-/// Solana rent-exempt minimum for a 0-data account (lamports).
-pub(crate) const RENT_EXEMPT_MINIMUM: u64 = 890_880;
 /// Minimum password length for secret key encryption.
-const MIN_PASSWORD_LEN: usize = 8;
+const MIN_PASSWORD_LEN: usize = 1;
 
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -31,13 +21,13 @@ use dialoguer::{Confirm, Input, MultiSelect, Password, Select};
 use nostr_sdk::{Keys, ToBech32};
 use solana_sdk::signature::Keypair;
 use solana_sdk::signer::Signer;
-use tracing::info;
 use zeroize::Zeroizing;
-use elisym_core::{DiscoveredAgent, SolanaNetwork};
 
 use self::args::{Cli, Commands};
 use self::config::{AgentConfig, LlmSection, PaymentSection};
 use self::error::{CliError, Result};
+
+use crate::util::{format_sol, format_sol_compact, sol_to_lamports};
 
 /// Run an async operation with an animated spinner.
 async fn with_spinner<F, T>(message: &str, fut: F) -> T
@@ -196,7 +186,6 @@ pub async fn run() -> Result<()> {
         Some(Commands::Config { name }) => cmd_config(&name)?,
         Some(Commands::Wallet { name }) => cmd_wallet(&name)?,
         Some(Commands::Send { name, address, amount }) => cmd_send(&name, &address, &amount)?,
-        Some(Commands::Dashboard { chain, network, rpc_url }) => cmd_dashboard(&chain, &network, rpc_url).await?,
         None => {
             // No subcommand — show banner and help
             print!("{}", style(banner::BANNER).cyan());
@@ -555,7 +544,7 @@ fn cmd_config(name: &str) -> Result<()> {
     println!("{}\n", style(format!("Configure agent: {}", name)).bold());
 
     loop {
-        let main_options = &["Provider settings", "Customer settings", "Done"];
+        let main_options = &["Provider settings", "Done"];
         let main_idx = Select::new()
             .with_prompt("Settings")
             .items(main_options)
@@ -725,28 +714,6 @@ fn cmd_config(name: &str) -> Result<()> {
                             }
                         }
                         // Back
-                        _ => break,
-                    }
-                }
-            }
-            // Customer settings
-            1 => {
-                loop {
-                    let sub_options = &["LLM provider", "\u{2190} Back"];
-                    let sub_idx = Select::new()
-                        .with_prompt("Customer settings")
-                        .items(sub_options)
-                        .default(0)
-                        .interact()?;
-
-                    match sub_idx {
-                        0 => {
-                            if let Some(llm) = prompt_llm_section()? {
-                                cfg.customer_llm = Some(llm);
-                                save_config_encrypted(&mut cfg, &password)?;
-                                println!("  {} Customer LLM saved.", style("*").green());
-                            }
-                        }
                         _ => break,
                     }
                 }
@@ -979,121 +946,165 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
     }
     drop(solana);
 
-    // Mode selection
-    println!();
-    println!("  {} {}",
-        style("Provider").cyan().bold(),
-        style("— listen for jobs, complete tasks with your LLM, earn SOL").dim(),
-    );
-    println!("  {} {}",
-        style("Customer").cyan().bold(),
-        style("— send requests to other agents, pay them in SOL").dim(),
-    );
-    println!();
-    let mode_options = &["Provider (listen for jobs)", "Customer (send requests)"];
-    let mode_idx = Select::new()
-        .with_prompt("Start as")
-        .items(mode_options)
-        .default(0)
-        .interact()?;
-
-    // enc_password is zeroized automatically on drop (Zeroizing<String>)
-
     println!();
 
-    match mode_idx {
-        // Provider mode
-        0 => {
-            // First-time capability setup: if only "general" and no inactive caps
-            if cfg.capabilities == ["general"] && cfg.inactive_capabilities.is_empty() {
-                let caps = prompt_capabilities_llm(&cfg).await?;
-                if !caps.is_empty() {
-                    cfg.capabilities = caps.iter().map(|(name, _)| name.clone()).collect();
-                    for (name, prompt) in &caps {
-                        cfg.capability_prompts.insert(name.clone(), prompt.clone());
-                    }
-                    save_config_encrypted(&mut cfg, &enc_password)?;
-                    println!(
-                        "  {} Capabilities: {}\n",
-                        style("✓").green().bold(),
-                        style(cfg.capabilities.join(", ")).cyan(),
-                    );
-                }
+    // ── LLM setup ──────────────────────────────────────────────
+    if cfg.llm.is_none() {
+        println!("  {} No LLM configured. Let's set one up.\n", style("!").yellow());
+        match prompt_llm_section()? {
+            Some(llm_section) => {
+                cfg.llm = Some(llm_section);
+                save_config_encrypted(&mut cfg, &enc_password)?;
+                println!("  {} LLM saved.\n", style("*").green());
             }
-
-            // Job price prompt (first-time or update)
-            println!("  {}", style(
-                "How much your agent charges per task (in SOL). A 3% protocol fee is deducted from each payment."
-            ).dim());
-            loop {
-                let price_input: String = Input::new()
-                    .with_prompt("Job price in SOL")
-                    .default(format_sol(cfg.payment.job_price))
-                    .interact_text()?;
-
-                match sol_to_lamports(&price_input) {
-                    Some(new_price) => {
-                        if let Some(err) = agent::validate_job_price(new_price) {
-                            println!("  {} {}", style("!").yellow(), err);
-                            continue;
-                        }
-                        if new_price != cfg.payment.job_price {
-                            cfg.payment.job_price = new_price;
-                            save_config_encrypted(&mut cfg, &enc_password)?;
-                        }
-                        println!(
-                            "  {} Price set to {} SOL\n",
-                            style("✓").green().bold(),
-                            style(format_sol(cfg.payment.job_price)).green().bold()
-                        );
-                        break;
-                    }
-                    _ => {
-                        println!("  {} Invalid amount.", style("!").yellow());
-                    }
-                }
+            None => {
+                return Err(CliError::Other("LLM is required to run skills".into()));
             }
-
-            info!(agent = %name, "building agent node");
-            let agent = with_spinner(
-                "Connecting to relays and publishing capabilities...",
-                agent::build_agent(&cfg),
-            ).await?;
-            info!(agent = %name, npub = %agent.identity.npub(), "agent node ready");
-            println!();
-            println!("  {} {}",
-                style("⚡").yellow(),
-                style("Agent is live — listening for jobs").bold(),
-            );
-            println!("     {}",
-                style(format!("Capabilities: {}", cfg.capabilities.join(", "))).dim(),
-            );
-            println!("     {}",
-                style(format!("Price: {} SOL per job", format_sol(cfg.payment.job_price))).dim(),
-            );
-            println!("     {}",
-                style("Press Ctrl+C to stop.").dim(),
-            );
-            println!();
-            agent::run_agent(agent, &cfg, free).await?;
-        }
-        // Customer mode
-        _ => {
-            if free {
-                println!(
-                    "  {} --free flag is ignored in customer mode\n",
-                    style("!").yellow()
-                );
-            }
-            info!(agent = %name, "building agent node");
-            let agent = with_spinner(
-                "Connecting to relays...",
-                agent::build_agent(&cfg),
-            ).await?;
-            info!(agent = %name, npub = %agent.identity.npub(), "agent node ready");
-            customer::run_customer_repl(agent, &cfg).await?;
         }
     }
+
+    // ── Load skills ────────────────────────────────────────────
+    let skills_dir = std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .join("skills");
+    let all_skills = crate::skill::loader::load_skills_from_dir(&skills_dir)?;
+
+    if all_skills.is_empty() {
+        println!(
+            "  {} No skills found in {}\n",
+            style("!").yellow(),
+            style(skills_dir.display()).dim()
+        );
+        println!("  Create a skill directory with a SKILL.md to get started.");
+        println!("  Example: ./skills/my-skill/SKILL.md\n");
+        return Err(CliError::Other("no skills configured".into()));
+    }
+
+    // ── Skill selection ────────────────────────────────────────
+    let selected_skill = if all_skills.len() == 1 {
+        println!("  {} Skill: {} — {}",
+            style("*").green(),
+            style(all_skills[0].name()).cyan().bold(),
+            style(all_skills[0].description()).dim(),
+        );
+        all_skills.into_iter().next().unwrap()
+    } else {
+        let skill_names: Vec<String> = all_skills
+            .iter()
+            .map(|s| format!("{} — {}", s.name(), s.description()))
+            .collect();
+        let idx = Select::new()
+            .with_prompt("Select skill")
+            .items(&skill_names)
+            .default(0)
+            .interact()?;
+        println!();
+        let mut skills = all_skills;
+        skills.swap_remove(idx)
+    };
+
+    let mut registry = crate::skill::SkillRegistry::new();
+    let skill_name = selected_skill.name().to_string();
+    let skill_caps: Vec<String> = selected_skill.capabilities().to_vec();
+    registry.register(selected_skill);
+
+    // ── Price prompt ───────────────────────────────────────────
+    if !free {
+        println!("  {}", style("How much to charge per job (in SOL). 3% protocol fee is deducted.").dim());
+        loop {
+            let price_input: String = Input::new()
+                .with_prompt("Job price in SOL")
+                .default(format_sol(cfg.payment.job_price))
+                .interact_text()?;
+
+            match sol_to_lamports(&price_input) {
+                Some(new_price) => {
+                    if let Some(err) = agent::validate_job_price(new_price) {
+                        println!("  {} {}", style("!").yellow(), err);
+                        continue;
+                    }
+                    if new_price != cfg.payment.job_price {
+                        cfg.payment.job_price = new_price;
+                        save_config_encrypted(&mut cfg, &enc_password)?;
+                    }
+                    println!(
+                        "  {} Price: {} SOL per job\n",
+                        style("*").green(),
+                        style(format_sol(cfg.payment.job_price)).green().bold()
+                    );
+                    break;
+                }
+                _ => {
+                    println!("  {} Invalid amount.", style("!").yellow());
+                }
+            }
+        }
+    }
+
+    // Update config capabilities from skill
+    if skill_caps != cfg.capabilities {
+        cfg.capabilities = skill_caps.clone();
+        save_config_encrypted(&mut cfg, &enc_password)?;
+    }
+
+    // Build LLM client
+    let llm_client = Arc::new(llm::LlmClient::new(
+        cfg.llm.as_ref().expect("LLM already validated above"),
+    )?);
+
+    let ctx = crate::skill::SkillContext {
+        llm: Some(llm_client),
+        agent_name: cfg.name.clone(),
+        agent_description: cfg.description.clone(),
+    };
+
+    let runtime_config = crate::runtime::RuntimeConfig {
+        free_mode: free,
+        job_price: cfg.payment.job_price,
+        payment_timeout_secs: cfg.payment.payment_timeout_secs,
+        max_concurrent_jobs: 10,
+    };
+
+    let agent_node = with_spinner(
+        "Connecting to relays and publishing capabilities...",
+        agent::build_agent(&cfg),
+    ).await?;
+
+    let agent_node = Arc::new(agent_node);
+
+    println!();
+    println!("  {} {}",
+        style("⚡").yellow(),
+        style("Agent is live — listening for jobs").bold(),
+    );
+    println!("     {}  {}",
+        style("Skill").dim(),
+        style(&skill_name).cyan().bold(),
+    );
+    println!("     {}  {}",
+        style("Price").dim(),
+        if free {
+            style("FREE".to_string()).yellow().bold()
+        } else {
+            style(format!("{} SOL", format_sol(cfg.payment.job_price))).green().bold()
+        },
+    );
+    println!("     {}",
+        style("Press Ctrl+C to stop.").dim(),
+    );
+    println!();
+
+    let runtime = crate::runtime::AgentRuntime::new(
+        Arc::clone(&agent_node),
+        registry,
+        ctx,
+        runtime_config,
+    );
+    let transport = crate::transport::nostr::NostrTransport::new(
+        agent_node,
+        vec![elisym_core::DEFAULT_KIND_OFFSET],
+    );
+    runtime.run(Box::new(transport)).await?;
 
     Ok(())
 }
@@ -1175,9 +1186,6 @@ fn cmd_status(name: &str) -> Result<()> {
         println!("  max tokens:   {}", llm.max_tokens);
     } else {
         println!("  llm:          {}", style("not configured").dim());
-    }
-    if let Some(ref cllm) = cfg.customer_llm {
-        println!("  customer llm: {} ({})", cllm.provider, cllm.model);
     }
     println!("  config:       {}", config::config_path(name)?.display());
 
@@ -1335,177 +1343,18 @@ fn display_wallet_status(solana: &elisym_core::SolanaPaymentProvider, cfg: &Agen
     Ok(())
 }
 
-// ── dashboard ─────────────────────────────────────────────────────
-
-async fn cmd_dashboard(chain: &str, network: &str, rpc_url: Option<String>) -> Result<()> {
-    dashboard::run_dashboard(chain.to_string(), network.to_string(), rpc_url).await
-}
-
-/// Format lamports as SOL with full 9-decimal precision (integer-only arithmetic).
-fn format_sol(lamports: u64) -> String {
-    let whole = lamports / 1_000_000_000;
-    let frac = lamports % 1_000_000_000;
-    format!("{}.{:09}", whole, frac)
-}
-
-/// Format lamports as SOL with 4-decimal compact display (integer-only arithmetic).
-pub(crate) fn format_sol_compact(lamports: u64) -> String {
-    let whole = lamports / 1_000_000_000;
-    let frac = (lamports % 1_000_000_000) / 100_000;
-    format!("{}.{:04}", whole, frac)
-}
-
-/// Format basis points as a percentage string (e.g., 300 bps → "3.00%").
-pub(crate) fn format_bps_percent(bps: u64) -> String {
-    let whole = bps / 100;
-    let frac = bps % 100;
-    format!("{}.{:02}%", whole, frac)
-}
-
-/// Parse a SOL amount string (e.g. "1.5") into lamports using integer-only arithmetic.
-/// Returns None for invalid input, zero/negative amounts, or > 9 decimal places.
-fn sol_to_lamports(sol_str: &str) -> Option<u64> {
-    let s = sol_str.trim();
-    if s.is_empty() {
-        return None;
-    }
-    let parts: Vec<&str> = s.splitn(2, '.').collect();
-    let whole: u64 = parts[0].parse().ok()?;
-    let frac: u64 = if parts.len() == 2 {
-        let frac_str = parts[1];
-        if frac_str.is_empty() || frac_str.len() > 9 {
-            return None;
-        }
-        let padded = format!("{:0<9}", frac_str);
-        padded.parse().ok()?
-    } else {
-        0
-    };
-    whole.checked_mul(1_000_000_000)?.checked_add(frac)
-}
-
-/// Paste-aware single-line prompt using crossterm raw mode.
-/// Handles bracketed paste and fallback paste detection (50ms timeout on Enter).
-/// Returns the trimmed input string, or None if the user pressed Ctrl+C / Ctrl+D.
+/// Prompt-aware input using dialoguer for capability description.
+/// Returns the trimmed input string, or None if the user typed "back".
 fn prompt_paste_aware(prompt: &str) -> Result<Option<String>> {
-    use std::io::{self, Write};
-    use crossterm::{
-        event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
-        execute,
-        event::{EnableBracketedPaste, DisableBracketedPaste},
-        terminal,
-    };
-
-    print!("{}: ", style(prompt).bold());
-    io::stdout().flush()?;
-
-    terminal::enable_raw_mode()?;
-    execute!(io::stdout(), EnableBracketedPaste)?;
-
-    let mut buffer = String::new();
-    let result = loop {
-        let ev = match event::read() {
-            Ok(ev) => ev,
-            Err(e) => {
-                terminal::disable_raw_mode()?;
-                execute!(io::stdout(), DisableBracketedPaste)?;
-                return Err(e.into());
-            }
-        };
-        match ev {
-            Event::Key(KeyEvent { code, modifiers, kind: KeyEventKind::Press, .. }) => match code {
-                KeyCode::Enter => {
-                    // Paste detection: if more input arrives within 50ms, treat Enter as
-                    // part of a paste and convert to space (single-line prompt).
-                    if event::poll(std::time::Duration::from_millis(50))? {
-                        buffer.push(' ');
-                        execute!(io::stdout(), crossterm::style::Print(" "))?;
-                    } else {
-                        break Some(buffer);
-                    }
-                }
-                KeyCode::Char('c') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    break None;
-                }
-                KeyCode::Char('d') if modifiers.contains(KeyModifiers::CONTROL) => {
-                    if buffer.is_empty() { break None; }
-                }
-                KeyCode::Char(c) => {
-                    buffer.push(c);
-                    execute!(io::stdout(), crossterm::style::Print(c.to_string()))?;
-                }
-                KeyCode::Backspace => {
-                    if buffer.pop().is_some() {
-                        execute!(io::stdout(), crossterm::style::Print("\x08 \x08"))?;
-                    }
-                }
-                _ => {}
-            },
-            Event::Paste(text) => {
-                // Flatten pasted newlines to spaces (single-line prompt)
-                let clean = text.replace("\r\n", " ").replace(['\r', '\n'], " ");
-                buffer.push_str(&clean);
-                execute!(io::stdout(), crossterm::style::Print(&clean))?;
-            }
-            _ => {}
-        }
-    };
-
-    terminal::disable_raw_mode()?;
-    execute!(io::stdout(), DisableBracketedPaste)?;
-    println!(); // newline after input
-
-    Ok(result.map(|s| s.trim().to_string()))
-}
-
-/// Parse a network name string into the elisym-core SolanaNetwork enum.
-pub(crate) fn parse_network(s: &str) -> SolanaNetwork {
-    match s {
-        "mainnet" => SolanaNetwork::Mainnet,
-        "testnet" => SolanaNetwork::Testnet,
-        "devnet" => SolanaNetwork::Devnet,
-        other => SolanaNetwork::Custom(other.to_string()),
+    let input: String = Input::new()
+        .with_prompt(prompt)
+        .interact_text()?;
+    let trimmed = input.trim().to_string();
+    if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("back") {
+        Ok(None)
+    } else {
+        Ok(Some(trimmed))
     }
-}
-
-/// Resolve a Solana RPC URL from the network name, using a custom URL if provided.
-pub(crate) fn resolve_rpc_url(network: &str, custom: Option<&str>) -> String {
-    if let Some(url) = custom {
-        return url.to_string();
-    }
-    parse_network(network).rpc_url()
-}
-
-/// Extract the payment chain from a discovered agent's metadata.
-pub(crate) fn extract_chain(agent: &DiscoveredAgent) -> String {
-    agent
-        .card
-        .metadata
-        .as_ref()
-        .and_then(|m| m["chain"].as_str())
-        .unwrap_or("solana")
-        .to_string()
-}
-
-/// Extract the payment network from a discovered agent's metadata.
-pub(crate) fn extract_network(agent: &DiscoveredAgent) -> String {
-    agent
-        .card
-        .metadata
-        .as_ref()
-        .and_then(|m| m["network"].as_str())
-        .unwrap_or("devnet")
-        .to_string()
-}
-
-/// Extract job price from a DiscoveredAgent's card metadata.
-pub(crate) fn extract_job_price(agent: &elisym_core::DiscoveredAgent) -> u64 {
-    agent
-        .card
-        .metadata
-        .as_ref()
-        .and_then(|m| m["job_price"].as_u64())
-        .unwrap_or(0)
 }
 
 /// Prompt for password and decrypt secrets if the config is encrypted.

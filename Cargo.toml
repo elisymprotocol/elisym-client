@@ -12,12 +12,11 @@ name = "elisym"
 path = "src/main.rs"
 
 [dependencies]
-elisym-core = { version = "0.11.0", default-features = false, features = ["payments-solana"] }
+elisym-core = { path = "../elisym-core", default-features = false, features = ["payments-solana"] }
 clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
 console = "0.15"
-ratatui = "0.29"
-crossterm = "0.28"
+async-trait = "0.1"
 toml = "0.8"
 serde = { version = "1", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }

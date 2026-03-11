@@ -1,0 +1,146 @@
+mod llm_skill;
+pub mod loader;
+pub mod script_skill;
+
+pub use llm_skill::LlmSkill;
+
+use std::sync::Arc;
+
+use async_trait::async_trait;
+use serde_json::Value;
+
+use crate::cli::error::Result;
+use crate::cli::llm::LlmClient;
+
+pub struct SkillInput {
+    pub data: String,
+    pub input_type: String,
+    pub tags: Vec<String>,
+    pub metadata: Value,
+}
+
+pub struct SkillOutput {
+    pub data: String,
+    pub output_mime: Option<String>,
+}
+
+pub struct SkillContext {
+    pub llm: Option<Arc<LlmClient>>,
+    pub agent_name: String,
+    pub agent_description: String,
+}
+
+#[async_trait]
+pub trait Skill: Send + Sync {
+    fn name(&self) -> &str;
+    fn description(&self) -> &str;
+    fn capabilities(&self) -> &[String];
+    async fn execute(&self, input: SkillInput, ctx: &SkillContext) -> Result<SkillOutput>;
+}
+
+pub struct SkillRegistry {
+    skills: Vec<Arc<dyn Skill>>,
+    default: Option<usize>,
+}
+
+impl Default for SkillRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SkillRegistry {
+    pub fn new() -> Self {
+        Self {
+            skills: Vec::new(),
+            default: None,
+        }
+    }
+
+    pub fn register(&mut self, skill: Arc<dyn Skill>) {
+        let idx = self.skills.len();
+        self.skills.push(skill);
+        if self.default.is_none() {
+            self.default = Some(idx);
+        }
+    }
+
+    /// Route by matching tags against skill capabilities.
+    pub fn route(&self, tags: &[String]) -> Option<&Arc<dyn Skill>> {
+        for skill in &self.skills {
+            let caps = skill.capabilities();
+            for tag in tags {
+                if caps.iter().any(|c| c == tag) {
+                    return Some(skill);
+                }
+            }
+        }
+        self.default_skill()
+    }
+
+    pub fn default_skill(&self) -> Option<&Arc<dyn Skill>> {
+        self.default.and_then(|i| self.skills.get(i))
+    }
+
+    pub fn all_capabilities(&self) -> Vec<String> {
+        self.skills
+            .iter()
+            .flat_map(|s| s.capabilities().to_vec())
+            .collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.skills.is_empty()
+    }
+
+    pub fn skills(&self) -> &[Arc<dyn Skill>] {
+        &self.skills
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct DummySkill {
+        caps: Vec<String>,
+    }
+
+    #[async_trait]
+    impl Skill for DummySkill {
+        fn name(&self) -> &str { "dummy" }
+        fn description(&self) -> &str { "test skill" }
+        fn capabilities(&self) -> &[String] { &self.caps }
+        async fn execute(&self, _input: SkillInput, _ctx: &SkillContext) -> Result<SkillOutput> {
+            Ok(SkillOutput { data: "ok".into(), output_mime: None })
+        }
+    }
+
+    #[test]
+    fn test_routing() {
+        let mut reg = SkillRegistry::new();
+        let skill_a = Arc::new(DummySkill { caps: vec!["code".into(), "debug".into()] });
+        let skill_b = Arc::new(DummySkill { caps: vec!["translate".into()] });
+        reg.register(skill_a);
+        reg.register(skill_b);
+
+        let found = reg.route(&["translate".into()]);
+        assert_eq!(found.unwrap().name(), "dummy");
+        assert!(found.unwrap().capabilities().contains(&"translate".into()));
+
+        let found = reg.route(&["code".into()]);
+        assert!(found.unwrap().capabilities().contains(&"code".into()));
+
+        let found = reg.route(&["unknown".into()]);
+        assert!(found.unwrap().capabilities().contains(&"code".into()));
+    }
+
+    #[test]
+    fn test_all_capabilities() {
+        let mut reg = SkillRegistry::new();
+        reg.register(Arc::new(DummySkill { caps: vec!["a".into(), "b".into()] }));
+        reg.register(Arc::new(DummySkill { caps: vec!["c".into()] }));
+        let all = reg.all_capabilities();
+        assert_eq!(all, vec!["a", "b", "c"]);
+    }
+}

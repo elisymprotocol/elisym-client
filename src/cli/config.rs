@@ -46,7 +46,9 @@ pub struct AgentConfig {
     pub capability_prompts: HashMap<String, String>,
     #[serde(default)]
     pub llm: Option<LlmSection>,
-    #[serde(default)]
+    /// Deprecated: ignored on read, not written. Kept for backwards compat with old configs.
+    #[serde(default, skip_serializing)]
+    #[allow(dead_code)]
     pub customer_llm: Option<LlmSection>,
     #[serde(default)]
     pub encryption: Option<super::crypto::EncryptionSection>,
@@ -63,7 +65,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("secret_key", &"[REDACTED]")
             .field("payment", &self.payment)
             .field("llm", &self.llm)
-            .field("customer_llm", &self.customer_llm)
+            .field("customer_llm", &"[deprecated]")
             .field("encryption", &self.encryption.is_some())
             .finish()
     }
@@ -81,7 +83,7 @@ impl AgentConfig {
             nostr_secret_key: self.secret_key.clone(),
             solana_secret_key: self.payment.solana_secret_key.clone(),
             llm_api_key: self.llm.as_ref().map(|l| l.api_key.clone()).unwrap_or_default(),
-            customer_llm_api_key: self.customer_llm.as_ref().map(|l| l.api_key.clone()),
+            customer_llm_api_key: None,
         }
     }
 
@@ -95,9 +97,6 @@ impl AgentConfig {
         if let Some(ref mut llm) = self.llm {
             llm.api_key = String::new();
         }
-        if let Some(ref mut cllm) = self.customer_llm {
-            cllm.api_key = String::new();
-        }
         Ok(())
     }
 
@@ -110,11 +109,6 @@ impl AgentConfig {
         self.payment.solana_secret_key = bundle.solana_secret_key;
         if let Some(ref mut llm) = self.llm {
             llm.api_key = bundle.llm_api_key;
-        }
-        if let Some(ref mut cllm) = self.customer_llm {
-            if let Some(key) = bundle.customer_llm_api_key {
-                cllm.api_key = key;
-            }
         }
         Ok(())
     }
@@ -145,6 +139,14 @@ fn default_max_tokens() -> u32 {
     4096
 }
 
+fn default_job_price() -> u64 {
+    10_000_000 // 0.01 SOL
+}
+
+fn default_payment_timeout_secs() -> u32 {
+    120
+}
+
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PaymentSection {
@@ -152,7 +154,9 @@ pub struct PaymentSection {
     pub network: String,
     #[serde(default)]
     pub rpc_url: Option<String>,
+    #[serde(default = "default_job_price")]
     pub job_price: u64,
+    #[serde(default = "default_payment_timeout_secs")]
     pub payment_timeout_secs: u32,
     pub solana_secret_key: String,
 }
@@ -241,9 +245,6 @@ pub fn load_config_public(name: &str) -> Result<AgentConfig> {
     config.payment.solana_secret_key.zeroize();
     if let Some(ref mut llm) = config.llm {
         llm.api_key.zeroize();
-    }
-    if let Some(ref mut cllm) = config.customer_llm {
-        cllm.api_key.zeroize();
     }
     Ok(config)
 }

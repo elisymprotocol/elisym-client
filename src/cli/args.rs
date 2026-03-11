@@ -58,16 +58,4 @@ pub enum Commands {
         amount: String,
     },
 
-    /// Launch live protocol dashboard (global observer mode)
-    Dashboard {
-        /// Network to observe: devnet (default), mainnet, testnet
-        #[arg(default_value = "devnet")]
-        network: String,
-        /// Payment chain to observe (solana, lightning)
-        #[arg(long, default_value = "solana")]
-        chain: String,
-        /// Custom Solana RPC URL (overrides network default)
-        #[arg(long)]
-        rpc_url: Option<String>,
-    },
 }

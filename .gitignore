@@ -6,3 +6,7 @@ target/
 .env.local
 temp/
 CLAUDE.md
+.claude
+tmp
+temp
+.cache

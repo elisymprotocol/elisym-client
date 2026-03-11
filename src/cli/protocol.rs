@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 /// { "type": "elisym_ping", "nonce": "<random_bs58>" }
 /// { "type": "elisym_pong", "nonce": "<echo_back_same_nonce>" }
 /// ```
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HeartbeatMessage {
     #[serde(rename = "type")]
@@ -18,6 +19,7 @@ pub struct HeartbeatMessage {
     pub nonce: String,
 }
 
+#[allow(dead_code)]
 impl HeartbeatMessage {
     pub fn ping(nonce: String) -> Self {
         Self {
@@ -43,6 +45,7 @@ impl HeartbeatMessage {
 }
 
 /// Generate a cryptographically random nonce using OS entropy.
+#[allow(dead_code)]
 pub fn random_nonce() -> String {
     let mut buf = [0u8; 16];
     getrandom::getrandom(&mut buf).expect("failed to generate random bytes");
