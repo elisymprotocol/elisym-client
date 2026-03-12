@@ -63,10 +63,11 @@ def save_cache(url: str, data: dict):
 def get_video_info(url: str) -> dict:
     """Fetch video title, duration, description, and language info."""
     result = subprocess.run(
-        ["yt-dlp", "--dump-json", "--no-download", "--no-check-formats", *_cookies_args(), url],
+        [sys.executable, "-m", "yt_dlp", "--dump-json", "--no-download", "--no-check-formats", *_cookies_args(), url],
         capture_output=True, text=True, timeout=30,
     )
     if result.returncode != 0:
+        print(f"yt-dlp --dump-json failed (code {result.returncode}): {result.stderr.strip()}", file=sys.stderr)
         # Fallback: return minimal info if --dump-json fails (e.g. EJS solver issues)
         vid = video_id_from_url(url)
         return {
@@ -119,7 +120,7 @@ def _try_fetch_subs(url: str, lang: str) -> str | None:
         output_path = os.path.join(tmpdir, "subs")
         subprocess.run(
             [
-                "yt-dlp",
+                sys.executable, "-m", "yt_dlp",
                 "--write-auto-sub", "--write-sub",
                 "--sub-lang", lang,
                 "--sub-format", "vtt",
@@ -142,7 +143,7 @@ def _try_fetch_subs_any(url: str) -> str | None:
         output_path = os.path.join(tmpdir, "subs")
         subprocess.run(
             [
-                "yt-dlp",
+                sys.executable, "-m", "yt_dlp",
                 "--write-auto-sub", "--write-sub",
                 "--sub-format", "vtt",
                 "--skip-download",
@@ -188,7 +189,7 @@ def transcribe_audio(url: str) -> str:
         audio_path = os.path.join(tmpdir, "audio.mp3")
         print("Downloading audio...", file=sys.stderr)
         result = subprocess.run(
-            ["yt-dlp", "-x", "--audio-format", "mp3", "--audio-quality", "5", *_cookies_args(), "-o", audio_path, url],
+            [sys.executable, "-m", "yt_dlp", "-x", "--audio-format", "mp3", "--audio-quality", "5", *_cookies_args(), "-o", audio_path, url],
             capture_output=True, text=True, timeout=300,
         )
         if result.returncode != 0:
