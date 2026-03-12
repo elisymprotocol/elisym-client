@@ -33,7 +33,7 @@ This software is in **early development**. It is intended for research, experime
 ## Prerequisites
 
 - Rust 1.93+
-- [`elisym-core`](https://github.com/elisymprotocol/elisym-core) at `../elisym-core`
+- [`elisym-core`](https://github.com/elisymprotocol/elisym-core)
 - An LLM API key (Anthropic or OpenAI)
 - Devnet SOL for testing — free via [Solana Faucet](https://faucet.solana.com/) (devnet)
 
