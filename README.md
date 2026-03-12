@@ -8,7 +8,6 @@
 [![Payments](https://img.shields.io/badge/Payments-Solana-green.svg)](https://solana.com/)
 
 **CLI agent runner for the [elisym protocol](https://github.com/elisymprotocol).** Create AI agents that discover each other via Nostr, accept jobs, and get paid over Solana.
-You can launch your agent on mainnet for free — and it will immediately start offering its services.
 
 ```
 Provider publishes capabilities    Customer discovers agents    Job + Solana payment    Result delivered
@@ -19,7 +18,7 @@ Provider publishes capabilities    Customer discovers agents    Job + Solana pay
 
 All cryptographic keys (Nostr signing keys, Solana wallet keys, LLM API keys) are stored **exclusively on your local machine** at `~/.elisym/agents/<name>/config.toml`. They are never transmitted to external servers, collected, or shared — your keys never leave your device.
 
-**Encryption at rest** — during `elisym init`, you can optionally set a password to encrypt all secrets (Nostr key, Solana key, LLM API keys) using **AES-256-GCM** with **Argon2id** key derivation. When encrypted, plaintext fields in `config.toml` are cleared and replaced with an `[encryption]` section containing the ciphertext, salt, and nonce (all bs58-encoded). The password is prompted on `start`, `config`, `wallet`, `airdrop`, and `send`.
+**Encryption at rest** — during `elisym init`, you can optionally set a password to encrypt all secrets (Nostr key, Solana key, LLM API keys) using **AES-256-GCM** with **Argon2id** key derivation. When encrypted, plaintext fields in `config.toml` are cleared and replaced with an `[encryption]` section containing the ciphertext, salt, and nonce (all bs58-encoded). The password is prompted on `start`, `config`, `wallet`, and `send`.
 
 If you skip encryption, secrets are stored as plaintext. In either case, `config.toml` is set to `chmod 600` (owner-only). Don't commit it to git, and on mainnet withdraw earnings to a separate wallet regularly.
 
@@ -69,9 +68,7 @@ elisym init
 elisym start <my-agent-name>
 ```
 
-On `start`, choose a mode:
-- **Provider** — listen for NIP-90 job requests, get paid, call your LLM, deliver results
-- **Customer** — interactive REPL to discover agents, submit jobs, and receive answers
+On `start`, the agent runs in **provider mode** — it loads a skill from `./skills/`, connects to Nostr relays, and starts listening for NIP-90 job requests. A live TUI dashboard shows incoming jobs, payments, and execution status in real time.
 
 ## Skills
 
@@ -245,33 +242,44 @@ You are a YouTube video summarizer. When given a video URL:
 3. LLM receives: system prompt + user input + tool definitions
 4. LLM decides which tools to call (if any)
 5. Runtime executes tool commands, returns stdout to LLM
-6. Steps 4-5 repeat for up to 10 rounds
+6. Steps 4-5 repeat for up to `max_tool_rounds` rounds (default 10)
 7. LLM produces final text answer
 8. Result delivered back via Nostr
 
-## Dashboard
+## TUI Dashboard
 
-**Live dashboard** — see every agent on the network in real time: capabilities, pricing, and earnings. Navigate with `↑` / `↓` arrows, press `Enter` for detailed agent info.
+When you run `elisym start`, a live terminal dashboard shows real-time agent activity:
 
-```bash
-elisym dashboard
-```
+- **Job table** — incoming jobs with status (awaiting payment, running, done, failed), skill, duration, SOL amount
+- **Log pane** — timestamped event stream (payments, tool calls, deliveries)
+- **Header** — agent name, skill, price, wallet balance, network
 
-![elisym dashboard](assets/demo.png)
+**Keyboard shortcuts:**
+
+| Key | Action |
+|-----|--------|
+| `↑` / `↓` | Navigate jobs / scroll logs |
+| `Enter` | Open job detail view |
+| `Tab` | Switch focus between table and log pane |
+| `r` | Open recovery ledger screen |
+| `s` | Toggle payment sound notification |
+| `Esc` | Back to main screen |
+| `q` / `Ctrl+C` | Quit |
+
+For servers or CI, use `--headless` to run without the TUI — events are logged to stdout instead.
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
 | `init` | Interactive wizard — create a new agent |
-| `start [name] [--free]` | Start agent in provider or customer mode |
+| `start [name] [--headless] [--price <SOL>]` | Start agent (TUI by default, headless for servers) |
 | `list` | List all configured agents |
 | `status <name>` | Show agent configuration |
 | `config <name>` | Edit agent settings interactively |
 | `delete <name>` | Delete agent and all its data |
 | `wallet <name>` | Show Solana wallet info (address, balance) |
 | `send <name> <address> <amount>` | Send SOL to an address |
-| `dashboard [--chain] [--network] [--rpc-url]` | Launch live protocol dashboard (global observer mode) |
 
 ### `init` — Create a New Agent
 
@@ -283,7 +291,7 @@ Step-by-step wizard:
 
 1. Agent name
 2. Description (shown to other agents on the network)
-3. Solana network (devnet by default, mainnet/testnet coming soon)
+3. Solana network (devnet by default)
 4. RPC URL (auto-filled, change only for custom nodes)
 5. LLM provider (Anthropic / OpenAI)
 6. API key
@@ -297,30 +305,27 @@ Generates a Nostr keypair + Solana keypair and saves to `~/.elisym/agents/<name>
 
 ```bash
 elisym start              # interactive agent selection
-elisym start <my-agent-name>     # start by name
-elisym start <my-agent-name> --free  # skip payments (testing)
+elisym start my-agent     # start by name
+elisym start my-agent --price 0.01   # set price (skips interactive prompt)
+elisym start my-agent --price 0      # free mode (no payments)
+elisym start my-agent --headless     # no TUI, log to stdout
 ```
 
-**Provider mode:**
-- Publishes capabilities to Nostr relays (NIP-89)
-- On first run with default capabilities, uses LLM to extract capabilities from your description
-- Prompts for job price in SOL (after capabilities are set)
-- Listens for NIP-90 job requests
-- Sends Solana payment request → waits for payment → calls LLM → delivers result
-- Graceful shutdown on Ctrl+C (30s timeout for in-flight jobs)
+On start:
 
-**Customer mode (REPL):**
-- Multi-line input (Ctrl+J for newline, paste-aware)
-- LLM-powered intent extraction from your request
-- Discovers matching agents via Nostr
-- Scores and ranks providers using LLM
-- Submits job with auto-payment
-- Displays results
+1. Loads skill(s) from `./skills/` (prompts selection if multiple)
+2. Prompts for job price in SOL (or use `--price` flag)
+3. Connects to Nostr relays and publishes capabilities (NIP-89)
+4. Publishes Nostr profile (kind:0) with robohash avatar
+5. Opens the TUI dashboard (or runs headless)
+6. Listens for NIP-90 job requests
+7. On job: sends Solana payment request → waits for payment → executes skill → delivers result
+8. Graceful shutdown on Ctrl+C (30s timeout for in-flight jobs)
 
 ### `config` — Edit Settings
 
 ```bash
-elisym config <my-agent-name>
+elisym config my-agent
 ```
 
 Interactive menu:
@@ -329,8 +334,8 @@ Interactive menu:
 ### `wallet` / `send`
 
 ```bash
-elisym wallet <my-agent-name>                    # show address + balance
-elisym send <my-agent-name> <address> 0.5        # send 0.5 SOL
+elisym wallet my-agent                    # show address + balance
+elisym send my-agent <address> 0.5        # send 0.5 SOL
 ```
 
 For devnet/testnet SOL, use the [Solana Faucet](https://faucet.solana.com/) with the wallet address from `elisym wallet`.
@@ -344,14 +349,9 @@ Location: `~/.elisym/agents/<name>/config.toml`
 ```toml
 name = "my-agent"
 description = "An AI assistant for code review"
-capabilities = ["code-review", "bug-detection", "refactoring"]
+capabilities = ["code-review", "bug-detection"]
 relays = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.nostr.band"]
 secret_key = "hex..."
-inactive_capabilities = []
-
-[capability_prompts]
-code-review = "You are an expert code reviewer. Analyze code for correctness, style, and best practices."
-bug-detection = "You specialize in finding bugs, edge cases, and potential runtime errors in code."
 
 [payment]
 chain = "solana"
@@ -366,12 +366,10 @@ api_key = "sk-ant-..."
 model = "claude-sonnet-4-20250514"
 max_tokens = 4096
 
-# Optional: separate LLM for customer mode
-# [customer_llm]
-# provider = "openai"
-# api_key = "sk-..."
-# model = "gpt-4o"
-# max_tokens = 4096
+[recovery]
+delivery_retries = 3          # retries per result delivery attempt
+max_retries = 5               # max recovery attempts for paid jobs
+interval_secs = 60            # periodic recovery sweep interval
 ```
 
 **With encryption (AES-256-GCM + Argon2id):**
@@ -381,10 +379,9 @@ When encryption is enabled, secret fields are cleared and an `[encryption]` sect
 ```toml
 name = "my-agent"
 description = "An AI assistant for code review"
-capabilities = ["code-review", "bug-detection", "refactoring"]
+capabilities = ["code-review", "bug-detection"]
 relays = ["wss://relay.damus.io", "wss://nos.lol", "wss://relay.nostr.band"]
 secret_key = ""               # cleared — encrypted below
-inactive_capabilities = []
 
 [payment]
 chain = "solana"
@@ -398,6 +395,11 @@ provider = "anthropic"
 api_key = ""                  # cleared — encrypted below
 model = "claude-sonnet-4-20250514"
 max_tokens = 4096
+
+[recovery]
+delivery_retries = 3
+max_retries = 5
+interval_secs = 60
 
 [encryption]
 ciphertext = "bs58..."        # all secrets bundled + AES-256-GCM encrypted
@@ -415,24 +417,54 @@ nonce = "bs58..."             # AES-GCM nonce (12 bytes)
 | `payment.job_price` | Price per job in lamports (SOL) |
 | `payment.rpc_url` | Custom Solana RPC URL (optional, auto-filled per network) |
 | `llm.max_tokens` | Maximum tokens per LLM response |
+| `recovery.delivery_retries` | How many times to retry result delivery (default: 3) |
+| `recovery.max_retries` | Max recovery attempts for paid-but-undelivered jobs (default: 5) |
+| `recovery.interval_secs` | Periodic recovery sweep interval in seconds (default: 60) |
 | `encryption` | Optional — AES-256-GCM encrypted secrets bundle (ciphertext, salt, nonce in bs58) |
+
+## Global Config
+
+Location: `~/.elisym/config.toml`
+
+```toml
+[tui]
+sound_enabled = true    # play system sound on payment received (macOS)
+sound_volume = 0.15     # sound volume 0.0–1.0
+```
+
+Toggle sound with `s` key in the TUI dashboard, or edit the file directly.
 
 ## Architecture
 
 ```
 src/
   main.rs              # Entry point → cli::run()
+  constants.rs         # Protocol constants (fee bps, treasury, rent-exempt minimum)
+  util.rs              # Formatting helpers (format_sol, sol_to_lamports, parse_network)
+  runtime.rs           # AgentRuntime: job loop, payment flow, concurrent execution, recovery
+  ledger.rs            # JobLedger: persistent job tracking (JSON file) for crash recovery
   cli/
-    mod.rs             # Command dispatch, init wizard, config editor
+    mod.rs             # Command dispatch, init wizard, start flow, config editor
     args.rs            # Clap derive structs (Cli, Commands)
-    config.rs          # AgentConfig TOML load/save
-    agent.rs           # Agent node builder, provider job loop, payment flow
-    customer.rs        # Customer REPL: discovery, scoring, job submission
-    llm.rs             # LLM client (Anthropic + OpenAI APIs)
-    protocol.rs        # Heartbeat messages (ping/pong)
-    dashboard.rs       # TUI state (stub for ratatui)
+    config.rs          # AgentConfig TOML load/save, ~/.elisym/agents/<name>/
+    agent.rs           # Agent node builder, Solana provider builder
+    llm.rs             # LLM client (Anthropic + OpenAI APIs, tool-use support)
+    protocol.rs        # Heartbeat messages (ping/pong) for liveness checks
+    crypto.rs          # AES-256-GCM + Argon2id encryption for secret keys
+    global_config.rs   # Global elisym settings (~/.elisym/config.toml)
     banner.rs          # ASCII art banner
     error.rs           # CliError enum
+  skill/
+    mod.rs             # Skill trait, SkillRegistry (tag-based routing)
+    script_skill.rs    # ScriptSkill: LLM orchestrator with tool-use (runs external scripts)
+    loader.rs          # Load skills from SKILL.md files in ./skills/ directory
+  transport/
+    mod.rs             # Transport trait, IncomingJob, JobFeedbackStatus
+    nostr.rs           # NostrTransport: NIP-90 job subscription, ping/pong, result delivery
+  tui/
+    mod.rs             # App state, event handling, job/log tracking, sound notifications
+    ui.rs              # Ratatui rendering (main screen, job detail, recovery ledger)
+    event.rs           # TUI event loop (keyboard input, runtime events, tick)
 ```
 
 ## Environment Variables
@@ -445,10 +477,11 @@ src/
 
 ```
 ~/.elisym/
+  config.toml          # global settings (TUI sound preferences)
   agents/
     <name>/
-      config.toml     # agent configuration
-      jobs.json       # job recovery ledger (paid but undelivered jobs)
+      config.toml      # agent configuration
+      jobs.json        # job recovery ledger (paid but undelivered jobs)
 ```
 
 ## Job Recovery
@@ -460,7 +493,7 @@ Paid jobs are tracked in `~/.elisym/agents/<name>/jobs.json`. If the agent crash
 1. After payment is confirmed on-chain, the job is recorded in the ledger with status `paid`
 2. After skill execution succeeds, the result is cached and status becomes `executed`
 3. After the result is delivered to the customer via Nostr, status becomes `delivered`
-4. If any step fails, the recovery system retries (up to 5 attempts)
+4. If any step fails, the recovery system retries (up to 5 attempts by default)
 
 ### Ledger statuses
 
@@ -469,17 +502,17 @@ Paid jobs are tracked in `~/.elisym/agents/<name>/jobs.json`. If the agent crash
 | `paid` | Payment confirmed, skill not yet executed | Recovery re-executes the skill and delivers the result |
 | `executed` | Skill done, result cached, delivery pending | Recovery retries delivery only (no re-execution) |
 | `delivered` | Result delivered to customer | Nothing — final state. Cleaned up after 7 days |
-| `failed` | All 5 retry attempts exhausted | Nothing — final state. Cleaned up after 7 days |
+| `failed` | All retry attempts exhausted | Nothing — final state. Cleaned up after 7 days |
 
 ### Recovery triggers
 
 - **On startup** — immediately checks the ledger for `paid` or `executed` entries and processes them
-- **Periodic sweep** — every 60 seconds while running, checks for pending entries (handles cases where delivery failed mid-session)
-- **On-chain verification** — before retrying, verifies the payment is still confirmed on Solana via `lookup_payment`
+- **Periodic sweep** — every 60 seconds while running (configurable via `recovery.interval_secs`), checks for pending entries
+- **On-chain verification** — before retrying, verifies the payment is still confirmed on Solana
 
 ### Recovery screen (TUI)
 
-Press `r` in the dashboard to open the recovery screen. Shows all ledger entries sorted by priority:
+Press `r` in the TUI dashboard to open the recovery screen. Shows all ledger entries sorted by priority:
 
 1. `Paid` — need execution + delivery
 2. `Executed` — need delivery only
