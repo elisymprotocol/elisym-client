@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 #[cfg(unix)]
@@ -41,10 +40,6 @@ pub struct AgentConfig {
     pub secret_key: String,
     pub payment: PaymentSection,
     #[serde(default)]
-    pub inactive_capabilities: Vec<String>,
-    #[serde(default)]
-    pub capability_prompts: HashMap<String, String>,
-    #[serde(default)]
     pub llm: Option<LlmSection>,
     /// Deprecated: ignored on read, not written. Kept for backwards compat with old configs.
     #[serde(default, skip_serializing)]
@@ -52,6 +47,8 @@ pub struct AgentConfig {
     pub customer_llm: Option<LlmSection>,
     #[serde(default)]
     pub encryption: Option<super::crypto::EncryptionSection>,
+    #[serde(default)]
+    pub recovery: RecoverySection,
 }
 
 // Custom Debug impl to avoid leaking secret keys and API keys in logs.
@@ -194,6 +191,38 @@ impl PaymentSection {
         let bytes = bs58::decode(&self.solana_secret_key).into_vec().ok()?;
         let keypair = solana_sdk::signature::Keypair::try_from(bytes.as_slice()).ok()?;
         Some(solana_sdk::signer::Signer::pubkey(&keypair).to_string())
+    }
+}
+
+fn default_delivery_retries() -> u32 {
+    3
+}
+
+fn default_recovery_max_retries() -> u32 {
+    5
+}
+
+fn default_recovery_interval_secs() -> u64 {
+    60
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecoverySection {
+    #[serde(default = "default_delivery_retries")]
+    pub delivery_retries: u32,
+    #[serde(default = "default_recovery_max_retries")]
+    pub max_retries: u32,
+    #[serde(default = "default_recovery_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for RecoverySection {
+    fn default() -> Self {
+        Self {
+            delivery_retries: 3,
+            max_retries: 5,
+            interval_secs: 60,
+        }
     }
 }
 

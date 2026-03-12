@@ -9,7 +9,6 @@ pub(crate) mod llm;
 pub(crate) mod protocol;
 
 
-use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -510,11 +509,10 @@ fn cmd_init() -> Result<String> {
             payment_timeout_secs: 120,
             solana_secret_key,
         },
-        inactive_capabilities: vec![],
-        capability_prompts: HashMap::new(),
         llm: Some(llm_section),
         customer_llm: None,
         encryption: None,
+        recovery: Default::default(),
     };
 
     if let Some(ref password) = encryption_password {
@@ -924,6 +922,8 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
         job_price: cfg.payment.job_price,
         payment_timeout_secs: cfg.payment.payment_timeout_secs,
         max_concurrent_jobs: 10,
+        recovery_max_retries: cfg.recovery.max_retries,
+        recovery_interval_secs: cfg.recovery.interval_secs,
     };
 
     let agent_node = with_spinner(
@@ -967,6 +967,7 @@ async fn cmd_start(name: Option<String>, free: bool) -> Result<()> {
             agent_node,
             vec![elisym_core::DEFAULT_KIND_OFFSET],
             event_tx,
+            cfg.recovery.delivery_retries,
         ),
     );
 

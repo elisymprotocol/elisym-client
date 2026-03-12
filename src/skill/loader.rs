@@ -16,6 +16,8 @@ struct SkillFrontmatter {
     capabilities: Vec<String>,
     #[serde(default)]
     tools: Vec<SkillToolDef>,
+    #[serde(default)]
+    max_tool_rounds: Option<usize>,
 }
 
 /// Parse a SKILL.md file: TOML frontmatter between `---` lines, markdown body = system prompt.
@@ -105,6 +107,7 @@ fn load_skill(skill_dir: &Path, md_path: &Path) -> Result<ScriptSkill> {
         skill_dir: skill_dir.to_path_buf(),
         system_prompt,
         tools: fm.tools,
+        max_tool_rounds: fm.max_tool_rounds.unwrap_or(super::script_skill::DEFAULT_MAX_TOOL_ROUNDS),
     })
 }
 

@@ -13,11 +13,6 @@ use crate::tui::AppEvent;
 
 use elisym_core::AgentNode;
 
-/// How often the recovery sweep runs (seconds).
-const RECOVERY_INTERVAL_SECS: u64 = 60;
-
-/// Maximum retry attempts before marking a job as permanently failed.
-const MAX_RETRIES: u32 = 5;
 
 pub struct AgentRuntime {
     agent: Arc<AgentNode>,
@@ -33,6 +28,8 @@ pub struct RuntimeConfig {
     pub job_price: u64,
     pub payment_timeout_secs: u32,
     pub max_concurrent_jobs: usize,
+    pub recovery_max_retries: u32,
+    pub recovery_interval_secs: u64,
 }
 
 impl Default for RuntimeConfig {
@@ -42,6 +39,8 @@ impl Default for RuntimeConfig {
             job_price: 10_000_000,
             payment_timeout_secs: 120,
             max_concurrent_jobs: 10,
+            recovery_max_retries: 5,
+            recovery_interval_secs: 60,
         }
     }
 }
@@ -105,8 +104,9 @@ impl AgentRuntime {
         let recovery_config = Arc::clone(&config);
         let recovery_etx = event_tx.clone();
         let recovery_ledger = Arc::clone(&ledger);
+        let recovery_interval = config.recovery_interval_secs;
         let recovery_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(RECOVERY_INTERVAL_SECS));
+            let mut interval = tokio::time::interval(Duration::from_secs(recovery_interval));
             interval.tick().await; // skip first immediate tick
             loop {
                 interval.tick().await;
@@ -349,12 +349,12 @@ async fn recover_pending_jobs(
     }
 
     for entry in pending {
-        if entry.retry_count >= MAX_RETRIES {
+        if entry.retry_count >= config.recovery_max_retries {
             let mut lg = ledger.lock().await;
             let _ = lg.mark_failed(&entry.job_id);
             let _ = event_tx.send(AppEvent::JobFailed {
                 job_id: entry.job_id.clone(),
-                error: format!("max retries ({}) exceeded", MAX_RETRIES),
+                error: format!("max retries ({}) exceeded", config.recovery_max_retries),
             });
             continue;
         }

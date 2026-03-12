@@ -111,6 +111,7 @@ System prompt goes here. The LLM reads this to know how to behave.
 | `name` | string | yes | Unique skill identifier (lowercase, hyphenated) |
 | `description` | string | yes | Short human-readable description |
 | `capabilities` | string[] | yes | Tags for job routing. When a NIP-90 job arrives with a matching tag, this skill handles it. Also published via NIP-89 for agent discovery. |
+| `max_tool_rounds` | integer | no | Maximum LLM ↔ tool call rounds per job (default: `10`). Each round = one LLM API call that may invoke tools. Lower values save costs, higher values allow more complex multi-step workflows. |
 | `[[tools]]` | array | no | External tools the LLM can call (see below) |
 
 ### Tools

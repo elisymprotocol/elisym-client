@@ -10,8 +10,8 @@ use crate::cli::llm::{CompletionResult, ToolCall, ToolDef, ToolParam};
 use crate::tui::AppEvent;
 use super::{Skill, SkillContext, SkillInput, SkillOutput};
 
-/// Maximum tool-use rounds to prevent infinite loops.
-const MAX_TOOL_ROUNDS: usize = 10;
+/// Default maximum tool-use rounds to prevent infinite loops.
+pub const DEFAULT_MAX_TOOL_ROUNDS: usize = 10;
 
 /// A tool defined in SKILL.md.
 #[derive(Debug, Clone, Deserialize)]
@@ -42,6 +42,7 @@ pub struct ScriptSkill {
     pub skill_dir: PathBuf,
     pub system_prompt: String,
     pub tools: Vec<SkillToolDef>,
+    pub max_tool_rounds: usize,
 }
 
 impl ScriptSkill {
@@ -183,12 +184,13 @@ impl Skill for ScriptSkill {
             "content": input.data,
         })];
 
-        for round in 0..MAX_TOOL_ROUNDS {
+        let max_rounds = self.max_tool_rounds;
+        for round in 0..max_rounds {
             if let Some(ref tx) = ctx.event_tx {
                 let _ = tx.send(AppEvent::LlmRound {
                     job_id: job_id.clone(),
                     round: round + 1,
-                    max_rounds: MAX_TOOL_ROUNDS,
+                    max_rounds,
                 });
             }
 
@@ -233,7 +235,7 @@ impl Skill for ScriptSkill {
 
         Err(CliError::Other(format!(
             "skill '{}' exceeded max tool rounds ({})",
-            self.name, MAX_TOOL_ROUNDS
+            self.name, max_rounds
         )))
     }
 }

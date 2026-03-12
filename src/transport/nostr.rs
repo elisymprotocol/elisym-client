@@ -17,6 +17,7 @@ pub struct NostrTransport {
     agent: Arc<AgentNode>,
     kind_offsets: Vec<u16>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
+    delivery_retries: u32,
 }
 
 impl NostrTransport {
@@ -24,11 +25,13 @@ impl NostrTransport {
         agent: Arc<AgentNode>,
         kind_offsets: Vec<u16>,
         event_tx: mpsc::UnboundedSender<AppEvent>,
+        delivery_retries: u32,
     ) -> Self {
         Self {
             agent,
             kind_offsets,
             event_tx,
+            delivery_retries,
         }
     }
 }
@@ -153,8 +156,9 @@ impl Transport for NostrTransport {
             TransportRaw::Nostr { job_request } => &job_request.raw_event,
         };
 
+        let max_attempts = self.delivery_retries.max(1);
         let mut last_err = None;
-        for attempt in 0..3 {
+        for attempt in 0..max_attempts {
             match self
                 .agent
                 .marketplace
@@ -171,7 +175,7 @@ impl Transport for NostrTransport {
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    if attempt < 2 {
+                    if attempt + 1 < max_attempts {
                         tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
                     }
                 }

@@ -2,6 +2,7 @@
 name = "youtube-summary"
 description = "Summarize YouTube videos from transcript"
 capabilities = ["youtube-summary", "video-analysis"]
+max_tool_rounds = 15
 
 [[tools]]
 name = "fetch_transcript"
