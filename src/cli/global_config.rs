@@ -70,11 +70,3 @@ pub fn save_global_config(config: &GlobalConfig) -> Result<()> {
     fs::write(&path, toml_str)?;
     Ok(())
 }
-
-/// Persist `default_agent` in ~/.elisym/config.toml.
-/// Creates the file if it doesn't exist; preserves other fields.
-pub fn set_default_agent(name: &str) -> Result<()> {
-    let mut config = load_global_config();
-    config.default_agent = Some(name.to_string());
-    save_global_config(&config)
-}
