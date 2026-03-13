@@ -24,7 +24,7 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -50,7 +50,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
@@ -76,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Create and push tag
         run: |
@@ -97,7 +97,7 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -149,7 +149,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
@@ -178,7 +178,7 @@ jobs:
           echo "x86_64_linux=$(sha256sum elisym-x86_64-unknown-linux-gnu.tar.gz | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew formula
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: elisymprotocol/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
