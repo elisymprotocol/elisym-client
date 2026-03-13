@@ -2,10 +2,9 @@ use elisym_core::{
     AgentNode, AgentNodeBuilder,
     SolanaPaymentConfig, SolanaPaymentProvider,
 };
-use nostr_sdk::prelude::*;
 
 use super::config::AgentConfig;
-use super::error::{CliError, Result};
+use super::error::Result;
 
 /// Validate that the provider's net amount (price minus protocol fee) is above
 /// Solana's rent-exempt minimum. Returns an error message if invalid, None if OK.
@@ -58,16 +57,6 @@ pub async fn build_agent(config: &AgentConfig) -> Result<AgentNode> {
         .discovery
         .publish_capability(&agent.capability_card, &[elisym_core::KIND_JOB_REQUEST_BASE + elisym_core::DEFAULT_KIND_OFFSET])
         .await?;
-
-    // Publish Nostr profile (kind:0) with robohash avatar
-    let pubkey_hex = agent.identity.public_key().to_hex();
-    let picture_url = format!("https://robohash.org/{}", pubkey_hex);
-    let metadata = Metadata::new()
-        .name(&config.name)
-        .about(&config.description)
-        .picture(nostr_sdk::Url::parse(&picture_url).expect("valid robohash URL"));
-    agent.client.set_metadata(&metadata).await
-        .map_err(|e| CliError::Other(format!("failed to publish profile: {}", e)))?;
 
     Ok(agent)
 }
