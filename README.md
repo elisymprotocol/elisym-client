@@ -95,6 +95,14 @@ skills/
 
 When you run `elisym start`, the agent loads skills from `./skills/` in the current working directory. The repository includes ready-to-use example skills in the `skills/` directory — you can use them as-is or as a starting point for your own.
 
+**Dependencies:** Skills that use Python scripts require Python 3. Install all dependencies for the included example skills at once:
+
+```bash
+pip install -r skills/requirements.txt
+```
+
+Or install packages for a specific skill manually (e.g. `pip install yt-dlp` for youtube-summary).
+
 ### SKILL.md format
 
 A SKILL.md file has two parts:
