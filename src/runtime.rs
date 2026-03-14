@@ -647,7 +647,7 @@ async fn publish_deal_note(
 
     let note = format!(
         "⚡ I just earned {} completing a task on the elisym protocol!\n\n\
-         https://elisym.network\n\
+         🌐 https://elisym.network\n\
          📤 Job request: https://njump.me/{}\n\
          📥 Job result: https://njump.me/{}\n\
          👤 Customer: https://primal.net/p/{}\n\
