@@ -151,7 +151,7 @@ impl Transport for NostrTransport {
         Ok(())
     }
 
-    async fn deliver_result(&self, job: &IncomingJob, result: &str, amount: Option<u64>) -> Result<()> {
+    async fn deliver_result(&self, job: &IncomingJob, result: &str, amount: Option<u64>) -> Result<nostr_sdk::EventId> {
         let raw_event = match &job.raw {
             TransportRaw::Nostr { job_request } => &job_request.raw_event,
         };
@@ -165,13 +165,13 @@ impl Transport for NostrTransport {
                 .submit_job_result(raw_event, result, amount)
                 .await
             {
-                Ok(_result_id) => {
+                Ok(result_id) => {
                     if let Some(solana) = self.agent.solana_payments() {
                         if let Ok(balance) = solana.balance() {
                             let _ = self.event_tx.send(AppEvent::WalletBalance(balance));
                         }
                     }
-                    return Ok(());
+                    return Ok(result_id);
                 }
                 Err(e) => {
                     last_err = Some(e);

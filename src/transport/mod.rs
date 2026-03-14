@@ -2,6 +2,7 @@ pub mod nostr;
 
 use async_trait::async_trait;
 use elisym_core::marketplace::JobRequest;
+use nostr_sdk::EventId;
 use tokio::sync::mpsc;
 
 use crate::cli::error::Result;
@@ -34,5 +35,5 @@ pub enum JobFeedbackStatus {
 pub trait Transport: Send + Sync {
     async fn start(&self) -> Result<mpsc::Receiver<IncomingJob>>;
     async fn send_feedback(&self, job: &IncomingJob, status: JobFeedbackStatus) -> Result<()>;
-    async fn deliver_result(&self, job: &IncomingJob, result: &str, amount: Option<u64>) -> Result<()>;
+    async fn deliver_result(&self, job: &IncomingJob, result: &str, amount: Option<u64>) -> Result<EventId>;
 }

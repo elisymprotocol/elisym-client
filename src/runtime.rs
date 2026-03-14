@@ -11,7 +11,12 @@ use crate::skill::{SkillContext, SkillInput, SkillRegistry};
 use crate::transport::{IncomingJob, JobFeedbackStatus, Transport, TransportRaw};
 use crate::tui::AppEvent;
 
+use nostr_sdk::{EventId, EventBuilder, PublicKey, ToBech32};
+use nostr_sdk::nips::nip19::Nip19Event;
+
 use elisym_core::AgentNode;
+
+use crate::util::format_sol_compact;
 
 
 pub struct AgentRuntime {
@@ -30,6 +35,7 @@ pub struct RuntimeConfig {
     pub max_concurrent_jobs: usize,
     pub recovery_max_retries: u32,
     pub recovery_interval_secs: u64,
+    pub network: String,
 }
 
 impl Default for RuntimeConfig {
@@ -40,6 +46,7 @@ impl Default for RuntimeConfig {
             max_concurrent_jobs: 10,
             recovery_max_retries: 5,
             recovery_interval_secs: 60,
+            network: "devnet".to_string(),
         }
     }
 }
@@ -243,11 +250,11 @@ async fn process_job(
     ledger: &Mutex<JobLedger>,
 ) -> Result<()> {
     let job_id = job.job_id.clone();
-    let (amount, payment_request_str) = if config.job_price == 0 {
-        (None, None)
+    let (amount, payment_request_str, tx_signature) = if config.job_price == 0 {
+        (None, None, None)
     } else {
-        let (net, pr) = collect_payment(agent, &job, transport, config.job_price, config.payment_timeout_secs, event_tx).await?;
-        (Some(net), Some(pr))
+        let (net, pr, tx_sig) = collect_payment(agent, &job, transport, config.job_price, config.payment_timeout_secs, event_tx).await?;
+        (Some(net), Some(pr), tx_sig)
     };
 
     // Record in ledger after payment confirmed (before execution)
@@ -321,7 +328,7 @@ async fn process_job(
     }
 
     let result_len = output.data.len();
-    transport.deliver_result(&job, &output.data, amount).await?;
+    let result_event_id = transport.deliver_result(&job, &output.data, amount).await?;
 
     // Mark delivered in ledger
     {
@@ -333,6 +340,11 @@ async fn process_job(
         job_id,
         result_len,
     });
+
+    // Publish deal note for paid jobs
+    if let Some(net_amount) = amount {
+        publish_deal_note(agent, &job, result_event_id, net_amount, tx_signature.as_deref(), &config.network).await;
+    }
 
     // Update wallet balance
     if let Some(solana) = agent.solana_payments() {
@@ -454,7 +466,7 @@ async fn recover_pending_jobs(
                     });
 
                     match transport.deliver_result(&job, result, amount).await {
-                        Ok(()) => {
+                        Ok(_) => {
                             let mut lg = ledger.lock().await;
                             let _ = lg.mark_delivered(&entry.job_id);
                             let _ = event_tx.send(AppEvent::JobCompleted {
@@ -536,7 +548,7 @@ async fn recover_execute_and_deliver(
             }
 
             match transport.deliver_result(job, &output.data, amount).await {
-                Ok(()) => {
+                Ok(_) => {
                     let mut lg = ledger.lock().await;
                     let _ = lg.mark_delivered(&entry.job_id);
                     let _ = event_tx.send(AppEvent::JobCompleted {
@@ -563,6 +575,101 @@ async fn recover_execute_and_deliver(
     }
 }
 
+/// Publish a kind:1 Nostr note celebrating a completed paid job.
+/// Best-effort: logs warning on failure, never propagates errors.
+async fn publish_deal_note(
+    agent: &AgentNode,
+    job: &IncomingJob,
+    result_event_id: EventId,
+    net_amount: u64,
+    tx_signature: Option<&str>,
+    network: &str,
+) {
+    if net_amount == 0 {
+        tracing::debug!("Skipping deal note for job {} — zero amount", job.job_id);
+        return;
+    }
+
+    let sol_display = if network != "mainnet" {
+        format!("{} SOL ({})", format_sol_compact(net_amount), network)
+    } else {
+        format!("{} SOL", format_sol_compact(net_amount))
+    };
+
+    // Encode job event ID as nevent
+    let job_event_id = match EventId::parse(&job.job_id) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::warn!("Failed to parse job event ID for deal note: {}", e);
+            return;
+        }
+    };
+    let relays: Vec<String> = vec![
+        "wss://relay.damus.io".into(),
+        "wss://nos.lol".into(),
+    ];
+    let job_nevent = Nip19Event {
+        event_id: job_event_id,
+        relays: relays.clone(),
+        author: None,
+        kind: None,
+    }
+    .to_bech32()
+    .unwrap_or_default();
+
+    let result_nevent = Nip19Event {
+        event_id: result_event_id,
+        relays,
+        author: None,
+        kind: None,
+    }
+    .to_bech32()
+    .unwrap_or_default();
+
+    // Encode customer npub
+    let customer_npub = PublicKey::parse(&job.customer_id)
+        .ok()
+        .and_then(|pk| pk.to_bech32().ok())
+        .unwrap_or_else(|| job.customer_id.clone());
+
+    // Build Solscan URL
+    let tx_line = match tx_signature {
+        Some(sig) => {
+            let cluster_suffix = if network == "mainnet" {
+                String::new()
+            } else {
+                format!("?cluster={}", network)
+            };
+            format!("🔗 Transaction: https://solscan.io/tx/{}{}\n", sig, cluster_suffix)
+        }
+        None => String::new(),
+    };
+
+    let note = format!(
+        "⚡ I just earned {} completing a task on the elisym protocol!\n\n\
+         https://elisym.network\n\
+         📤 Job request: https://njump.me/{}\n\
+         📥 Job result: https://njump.me/{}\n\
+         👤 Customer: https://primal.net/p/{}\n\
+         {}\n\
+         #nostr #ai #aiagents #solana #elisym #dvm",
+        sol_display, job_nevent, result_nevent, customer_npub, tx_line
+    );
+
+    match agent.client.send_event_builder(EventBuilder::text_note(&note)).await {
+        Ok(output) => {
+            tracing::info!(
+                event_id = %output.val,
+                "Published deal note for job {}",
+                job.job_id
+            );
+        }
+        Err(e) => {
+            tracing::warn!("Failed to publish deal note for job {}: {}", job.job_id, e);
+        }
+    }
+}
+
 async fn collect_payment(
     agent: &AgentNode,
     job: &IncomingJob,
@@ -570,7 +677,7 @@ async fn collect_payment(
     price: u64,
     payment_timeout_secs: u32,
     event_tx: &mpsc::UnboundedSender<AppEvent>,
-) -> Result<(u64, String)> {
+) -> Result<(u64, String, Option<String>)> {
     let job_id = job.job_id.clone();
     let _payments = agent
         .payments
@@ -629,9 +736,13 @@ async fn collect_payment(
     let deadline = tokio::time::Instant::now() + timeout;
     let poll_interval = Duration::from_secs(2);
 
+    let mut tx_signature: Option<String> = None;
     let paid = loop {
         match agent.payments.as_ref().unwrap().lookup_payment(&payment_request.request) {
-            Ok(status) if status.settled => break true,
+            Ok(status) if status.settled => {
+                tx_signature = status.tx_signature;
+                break true;
+            }
             Ok(_) => {}
             Err(_) => {}
         }
@@ -660,7 +771,7 @@ async fn collect_payment(
         net_amount: provider_net,
     });
 
-    Ok((provider_net, pr_string))
+    Ok((provider_net, pr_string, tx_signature))
 }
 
 #[cfg(test)]

@@ -954,6 +954,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
         max_concurrent_jobs: 10,
         recovery_max_retries: cfg.recovery.max_retries,
         recovery_interval_secs: cfg.recovery.interval_secs,
+        network: cfg.payment.network.clone(),
     };
 
     let agent_node = with_spinner(
