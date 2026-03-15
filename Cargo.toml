@@ -1,6 +1,6 @@
 [package]
 name = "elisym-client"
-version = "0.4.11"
+version = "0.4.12"
 edition = "2021"
 rust-version = "1.93"
 description = "CLI agent runner for the elisym protocol"
