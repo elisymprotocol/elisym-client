@@ -1023,6 +1023,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
             vec![elisym_core::DEFAULT_KIND_OFFSET],
             event_tx.clone(),
             cfg.recovery.delivery_retries,
+            cfg.payment.job_price,
         ),
     );
 

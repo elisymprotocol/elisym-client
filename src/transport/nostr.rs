@@ -21,6 +21,7 @@ pub struct NostrTransport {
     kind_offsets: Vec<u16>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     delivery_retries: u32,
+    job_price: u64,
 }
 
 impl NostrTransport {
@@ -29,12 +30,14 @@ impl NostrTransport {
         kind_offsets: Vec<u16>,
         event_tx: mpsc::UnboundedSender<AppEvent>,
         delivery_retries: u32,
+        job_price: u64,
     ) -> Self {
         Self {
             agent,
             kind_offsets,
             event_tx,
             delivery_retries,
+            job_price,
         }
     }
 }
@@ -156,6 +159,7 @@ impl Transport for NostrTransport {
 
         // Spawn job forwarding — only accept jobs with t:elisym tag
         let own_pubkey_hex = self.agent.identity.public_key().to_hex();
+        let job_price = self.job_price;
         tokio::spawn(async move {
             while let Some(job) = jobs_rx.recv().await {
                 let customer_id = job.customer.to_string();
@@ -197,6 +201,24 @@ impl Transport for NostrTransport {
                         "Ignoring job without t:elisym tag"
                     );
                     continue;
+                }
+
+                // Skip broadcast jobs that can't meet our price
+                if job_price > 0 && !is_directed {
+                    let dominated = match job.bid {
+                        Some(b) if b >= job_price => false,
+                        _ => true,
+                    };
+                    if dominated {
+                        tracing::debug!(
+                            job_id = %job.event_id,
+                            customer = %customer_id,
+                            bid = ?job.bid,
+                            job_price,
+                            "Skipping broadcast job: bid below price"
+                        );
+                        continue;
+                    }
                 }
 
                 let incoming = IncomingJob {
