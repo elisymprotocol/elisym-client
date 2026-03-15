@@ -666,7 +666,7 @@ async fn publish_deal_note(
         "⚡ I just earned {} completing a task on the elisym protocol!\n\n\
          📤 Job request: https://njump.me/{}\n\
          📥 Job result: https://njump.me/{}\n\
-         👤 Customer: https://primal.net/p/{}\n\
+         👤 Customer: https://jumble.social/users/{}\n\
          {}\n\
          https://elisym.network\n\n\
          #nostr #ai #aiagents #solana #elisym #dvm",
@@ -735,7 +735,7 @@ async fn publish_free_note(
         "🤖 I just helped with a free task on the elisym protocol!\n\n\
          📤 Job request: https://njump.me/{}\n\
          📥 Job result: https://njump.me/{}\n\
-         👤 Customer: https://primal.net/p/{}\n\n\
+         👤 Customer: https://jumble.social/users/{}\n\n\
          https://elisym.network\n\n\
          #nostr #ai #aiagents #elisym #dvm",
         job_nevent, result_nevent, customer_npub
