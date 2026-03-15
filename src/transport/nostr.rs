@@ -205,10 +205,7 @@ impl Transport for NostrTransport {
 
                 // Skip broadcast jobs that can't meet our price
                 if job_price > 0 && !is_directed {
-                    let dominated = match job.bid {
-                        Some(b) if b >= job_price => false,
-                        _ => true,
-                    };
+                    let dominated = !matches!(job.bid, Some(b) if b >= job_price);
                     if dominated {
                         tracing::debug!(
                             job_id = %job.event_id,
