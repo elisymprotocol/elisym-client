@@ -2,6 +2,7 @@ use elisym_core::{
     AgentNode, AgentNodeBuilder,
     SolanaPaymentConfig, SolanaPaymentProvider,
 };
+use nostr_sdk::{Contact, EventBuilder, PublicKey};
 
 use super::config::AgentConfig;
 use super::error::Result;
@@ -57,6 +58,13 @@ pub async fn build_agent(config: &AgentConfig) -> Result<AgentNode> {
         .discovery
         .publish_capability(&agent.capability_card, &[elisym_core::KIND_JOB_REQUEST_BASE + elisym_core::DEFAULT_KIND_OFFSET])
         .await?;
+
+    // Auto-follow the elisymprotocol account
+    if let Ok(protocol_pk) = PublicKey::from_hex(crate::constants::ELISYM_PROTOCOL_PUBKEY) {
+        let contacts = vec![Contact::new::<String>(protocol_pk, None, None)];
+        let builder = EventBuilder::contact_list(contacts);
+        let _ = agent.client.send_event_builder(builder).await;
+    }
 
     Ok(agent)
 }

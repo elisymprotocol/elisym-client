@@ -1,14 +1,17 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use elisym_core::types::JobStatus;
 use elisym_core::AgentNode;
-use nostr_sdk::Timestamp;
+use nostr_sdk::{EventId, Filter, Kind, PublicKey, Timestamp};
+use nostr_sdk::prelude::EventBuilder;
 use tokio::sync::mpsc;
 
 use crate::cli::error::Result;
 use crate::cli::protocol::HeartbeatMessage;
+use crate::constants::ELISYM_PROTOCOL_PUBKEY;
 use crate::tui::AppEvent;
 
 use super::{IncomingJob, JobFeedbackStatus, Transport, TransportRaw};
@@ -76,6 +79,80 @@ impl Transport for NostrTransport {
                 }
             }
         });
+
+        // Spawn auto-engage: like + repost new posts from elisymprotocol
+        if let Ok(protocol_pk) = PublicKey::from_hex(ELISYM_PROTOCOL_PUBKEY) {
+            let client = self.agent.client.clone();
+
+            // Connect to extra relays where elisymprotocol posts
+            for relay_url in crate::constants::ENGAGE_RELAYS {
+                if let Err(e) = client.add_relay(*relay_url).await {
+                    tracing::warn!(relay = relay_url, error = %e, "Auto-engage: failed to add relay");
+                }
+            }
+            client.connect().await;
+
+            let filter = Filter::new()
+                .author(protocol_pk)
+                .kind(Kind::TextNote)
+                .since(started_at);
+
+            let mut notifications = client.notifications();
+            let sub_result = client.subscribe(vec![filter], None).await;
+            tracing::info!(
+                protocol_pubkey = %ELISYM_PROTOCOL_PUBKEY,
+                since = %started_at,
+                subscribe_ok = sub_result.is_ok(),
+                "Auto-engage: subscribed to elisymprotocol posts"
+            );
+
+            tokio::spawn(async move {
+                let mut seen: HashSet<EventId> = HashSet::new();
+                loop {
+                    let notification = match notifications.recv().await {
+                        Ok(n) => n,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                            tracing::warn!(skipped = n, "Auto-engage receiver lagged");
+                            continue;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                            tracing::info!("Auto-engage: notification channel closed");
+                            break;
+                        }
+                    };
+                    if let nostr_sdk::RelayPoolNotification::Event { event, .. } = notification {
+                        tracing::debug!(
+                            event_id = %event.id,
+                            kind = event.kind.as_u16(),
+                            pubkey = %event.pubkey,
+                            "Auto-engage: received event"
+                        );
+                        if event.kind != Kind::TextNote || event.pubkey != protocol_pk {
+                            continue;
+                        }
+                        if !seen.insert(event.id) {
+                            tracing::debug!(event_id = %event.id, "Auto-engage: skipping duplicate");
+                            continue;
+                        }
+                        tracing::info!(event_id = %event.id, "Auto-engaging with elisymprotocol post");
+
+                        // Like (Kind 7 reaction)
+                        let reaction = EventBuilder::reaction(&event, "+");
+                        match client.send_event_builder(reaction).await {
+                            Ok(output) => tracing::info!(event_id = %output.val, "Auto-engage: liked post"),
+                            Err(e) => tracing::warn!(error = %e, "Auto-engage: failed to like post"),
+                        }
+
+                        // Repost (Kind 6)
+                        let repost = EventBuilder::repost(&event, None);
+                        match client.send_event_builder(repost).await {
+                            Ok(output) => tracing::info!(event_id = %output.val, "Auto-engage: reposted"),
+                            Err(e) => tracing::warn!(error = %e, "Auto-engage: failed to repost"),
+                        }
+                    }
+                }
+            });
+        }
 
         // Spawn job forwarding — only accept jobs with t:elisym tag
         let own_pubkey_hex = self.agent.identity.public_key().to_hex();
