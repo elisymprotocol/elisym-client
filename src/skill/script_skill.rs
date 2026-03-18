@@ -137,6 +137,19 @@ impl ScriptSkill {
             })
             .collect()
     }
+
+    #[cfg(test)]
+    fn new_test(name: &str, tools: Vec<SkillToolDef>) -> Self {
+        Self {
+            name: name.into(),
+            description: format!("{} description", name),
+            capabilities: vec!["cap-a".into(), "cap-b".into()],
+            skill_dir: PathBuf::from("."),
+            system_prompt: "test prompt".into(),
+            tools,
+            max_tool_rounds: DEFAULT_MAX_TOOL_ROUNDS,
+        }
+    }
 }
 
 #[async_trait]
@@ -238,4 +251,58 @@ impl Skill for ScriptSkill {
             self.name, max_rounds
         )))
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_tools() -> Vec<SkillToolDef> {
+        vec![
+            SkillToolDef {
+                name: "fetch".into(),
+                description: "Fetch data".into(),
+                command: vec!["python3".into(), "fetch.py".into()],
+                parameters: vec![SkillToolParam {
+                    name: "url".into(),
+                    description: "The URL".into(),
+                    required: true,
+                }],
+            },
+            SkillToolDef {
+                name: "parse".into(),
+                description: "Parse result".into(),
+                command: vec!["node".into(), "parse.js".into()],
+                parameters: vec![],
+            },
+        ]
+    }
+
+    #[test]
+    fn find_tool_existing() {
+        let skill = ScriptSkill::new_test("test", sample_tools());
+        assert!(skill.find_tool("fetch").is_some());
+        assert_eq!(skill.find_tool("fetch").unwrap().name, "fetch");
+    }
+
+    #[test]
+    fn find_tool_missing() {
+        let skill = ScriptSkill::new_test("test", sample_tools());
+        assert!(skill.find_tool("nonexistent").is_none());
+    }
+
+    #[test]
+    fn llm_tools_conversion() {
+        let skill = ScriptSkill::new_test("test", sample_tools());
+        let tools = skill.llm_tools();
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0].name, "fetch");
+        assert_eq!(tools[0].description, "Fetch data");
+        assert_eq!(tools[0].parameters.len(), 1);
+        assert_eq!(tools[0].parameters[0].name, "url");
+        assert!(tools[0].parameters[0].required);
+        assert_eq!(tools[1].name, "parse");
+        assert!(tools[1].parameters.is_empty());
+    }
+
 }

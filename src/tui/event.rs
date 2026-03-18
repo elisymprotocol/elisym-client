@@ -181,3 +181,62 @@ fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) -> bool {
 
     false
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    fn new_app() -> App {
+        App::new(
+            "test".into(),
+            "skill".into(),
+            100_000_000,
+            0,
+            "devnet".into(),
+            false,
+            0.15,
+        )
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn handle_key_q_main_quits() {
+        let mut app = new_app();
+        assert!(handle_key(&mut app, key(KeyCode::Char('q'))));
+    }
+
+    #[test]
+    fn handle_key_ctrl_c_quits() {
+        let mut app = new_app();
+        assert!(handle_key(&mut app, ctrl_key(KeyCode::Char('c'))));
+    }
+
+    #[test]
+    fn handle_key_enter_opens_job_detail() {
+        let mut app = new_app();
+        // Add a job so there's something to select
+        app.update(AppEvent::JobReceived {
+            job_id: "job123456789abc".into(),
+            customer_id: "cust123456789abc".into(),
+            input: "x".into(),
+        });
+        assert!(!handle_key(&mut app, key(KeyCode::Enter)));
+        assert!(matches!(app.screen, Screen::JobDetail(0)));
+    }
+
+    #[test]
+    fn handle_key_esc_returns_to_main() {
+        let mut app = new_app();
+        app.screen = Screen::JobDetail(0);
+        assert!(!handle_key(&mut app, key(KeyCode::Esc)));
+        assert!(matches!(app.screen, Screen::Main));
+    }
+}

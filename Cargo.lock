@@ -1507,7 +1507,9 @@ dependencies = [
 
 [[package]]
 name = "elisym-core"
-version = "0.13.2"
+version = "0.13.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "18af909d9bde63a6fd11ca6363cae91d671017cd3fe159629a4a88aa26b2fd9e"
 dependencies = [
  "bs58",
  "nostr-sdk",

@@ -476,6 +476,132 @@ pub fn create_event_channel() -> (mpsc::UnboundedSender<AppEvent>, mpsc::Unbound
     mpsc::unbounded_channel()
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn new_app() -> App {
+        App::new(
+            "test-agent".into(),
+            "test-skill".into(),
+            100_000_000,
+            500_000_000,
+            "devnet".into(),
+            false, // sound disabled for tests
+            0.15,
+        )
+    }
+
+    // ── App::update ──
+
+    #[test]
+    fn update_job_received() {
+        let mut app = new_app();
+        app.update(AppEvent::JobReceived {
+            job_id: "job123456789abc".into(),
+            customer_id: "cust123456789abc".into(),
+            input: "hello".into(),
+        });
+        assert_eq!(app.jobs.len(), 1);
+        assert_eq!(app.jobs[0].job_id, "job123456789abc");
+        assert!(matches!(app.jobs[0].status, JobStatus::PaymentPending));
+        assert_eq!(app.table_state.selected(), Some(0));
+        assert!(!app.global_logs.is_empty());
+    }
+
+    #[test]
+    fn update_payment_received() {
+        let mut app = new_app();
+        app.update(AppEvent::JobReceived {
+            job_id: "job123456789abc".into(),
+            customer_id: "cust123456789abc".into(),
+            input: "hello".into(),
+        });
+        app.update(AppEvent::PaymentReceived {
+            job_id: "job123456789abc".into(),
+            net_amount: 97_000_000,
+        });
+        assert!(matches!(app.jobs[0].status, JobStatus::Processing));
+        assert_eq!(app.jobs[0].net_amount, Some(97_000_000));
+    }
+
+    #[test]
+    fn update_job_completed() {
+        let mut app = new_app();
+        app.update(AppEvent::JobReceived {
+            job_id: "job123456789abc".into(),
+            customer_id: "cust123456789abc".into(),
+            input: "hello".into(),
+        });
+        app.update(AppEvent::JobCompleted {
+            job_id: "job123456789abc".into(),
+            result_len: 42,
+        });
+        assert!(matches!(app.jobs[0].status, JobStatus::Completed));
+        assert!(app.jobs[0].completed_at.is_some());
+    }
+
+    #[test]
+    fn update_wallet_balance() {
+        let mut app = new_app();
+        app.update(AppEvent::WalletBalance(999_000_000));
+        assert_eq!(app.wallet_balance, 999_000_000);
+    }
+
+    // ── App::select_next / select_prev ──
+
+    #[test]
+    fn select_next_wraps_around() {
+        let mut app = new_app();
+        // Add 3 jobs
+        for i in 0..3 {
+            app.update(AppEvent::JobReceived {
+                job_id: format!("job{:012}", i),
+                customer_id: format!("cust{:012}", i),
+                input: "x".into(),
+            });
+        }
+        app.table_state.select(Some(2)); // last
+        app.select_next();
+        assert_eq!(app.table_state.selected(), Some(0)); // wrapped to first
+    }
+
+    #[test]
+    fn select_prev_wraps_around() {
+        let mut app = new_app();
+        for i in 0..3 {
+            app.update(AppEvent::JobReceived {
+                job_id: format!("job{:012}", i),
+                customer_id: format!("cust{:012}", i),
+                input: "x".into(),
+            });
+        }
+        app.table_state.select(Some(0)); // first
+        app.select_prev();
+        assert_eq!(app.table_state.selected(), Some(2)); // wrapped to last
+    }
+
+    #[test]
+    fn select_next_empty_noop() {
+        let mut app = new_app();
+        app.select_next(); // should not panic
+        assert!(app.table_state.selected().is_none());
+    }
+
+    // ── App::add_global_log max cap ──
+
+    #[test]
+    fn global_log_capped_at_max() {
+        let mut app = new_app();
+        for i in 0..600 {
+            app.add_global_log("x", format!("log {}", i));
+        }
+        assert_eq!(app.global_logs.len(), MAX_GLOBAL_LOGS);
+        // Oldest entries were dropped — first remaining should be "log 100"
+        assert_eq!(app.global_logs.front().unwrap().message, "log 100");
+    }
+}
+
 /// Play a macOS system sound by name (e.g. "Blow", "Glass", "Ping").
 /// Non-blocking, fire-and-forget. Does nothing on non-macOS.
 fn play_sound(name: &str, volume: f32) {

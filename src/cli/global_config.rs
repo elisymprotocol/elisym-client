@@ -70,3 +70,34 @@ pub fn save_global_config(config: &GlobalConfig) -> Result<()> {
     fs::write(&path, toml_str)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn global_config_toml_roundtrip() {
+        let gc = GlobalConfig {
+            default_agent: Some("my-agent".into()),
+            tui: TuiSection {
+                sound_enabled: false,
+                sound_volume: 0.5,
+            },
+        };
+        let toml_str = toml::to_string_pretty(&gc).unwrap();
+        let parsed: GlobalConfig = toml::from_str(&toml_str).unwrap();
+        assert_eq!(parsed.default_agent.as_deref(), Some("my-agent"));
+        assert!(!parsed.tui.sound_enabled);
+        assert!((parsed.tui.sound_volume - 0.5).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn missing_tui_section_uses_defaults() {
+        let toml_str = r#"default_agent = "foo""#;
+        let parsed: GlobalConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(parsed.default_agent.as_deref(), Some("foo"));
+        // tui section should have defaults
+        assert!(parsed.tui.sound_enabled);
+        assert!((parsed.tui.sound_volume - 0.15).abs() < f32::EPSILON);
+    }
+}
