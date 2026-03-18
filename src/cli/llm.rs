@@ -404,3 +404,26 @@ impl LlmClient {
         Ok(CompletionResult::Text(text))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_provider_from_str_anthropic() {
+        let provider: LlmProvider = "anthropic".parse().unwrap();
+        assert_eq!(provider, LlmProvider::Anthropic);
+    }
+
+    #[test]
+    fn llm_provider_from_str_openai() {
+        let provider: LlmProvider = "openai".parse().unwrap();
+        assert_eq!(provider, LlmProvider::OpenAi);
+    }
+
+    #[test]
+    fn llm_provider_from_str_unknown_errors() {
+        let result: std::result::Result<LlmProvider, CliError> = "unknown".parse();
+        assert!(result.is_err());
+    }
+}

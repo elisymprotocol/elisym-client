@@ -172,4 +172,73 @@ Just answer questions.
         assert!(fm.tools.is_empty());
         assert_eq!(body, "Just answer questions.");
     }
+
+    #[test]
+    fn test_parse_skill_md_missing_opening() {
+        let content = "name = \"test\"\ndescription = \"test\"\n";
+        let err = parse_skill_md(content).unwrap_err();
+        assert!(err.to_string().contains("must start with ---"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_skill_md_missing_closing() {
+        let content = "---\nname = \"test\"\ndescription = \"test\"\n";
+        let err = parse_skill_md(content).unwrap_err();
+        assert!(err.to_string().contains("missing closing ---"), "got: {err}");
+    }
+
+    #[test]
+    fn test_parse_skill_md_empty_frontmatter() {
+        let content = "---\n---\n";
+        let err = parse_skill_md(content).unwrap_err();
+        // Missing required fields `name` and `description` should cause a TOML parse error
+        let msg = err.to_string();
+        assert!(msg.contains("TOML") || msg.contains("missing field"), "expected TOML parse error, got: {msg}");
+    }
+
+    #[test]
+    fn test_parse_skill_md_multiple_tools() {
+        let content = r#"---
+name = "multi-tool"
+description = "Skill with multiple tools"
+capabilities = ["a", "b"]
+
+[[tools]]
+name = "tool_one"
+description = "First tool"
+command = ["echo", "one"]
+
+[[tools.parameters]]
+name = "x"
+description = "param x"
+required = true
+
+[[tools.parameters]]
+name = "y"
+description = "param y"
+required = false
+
+[[tools]]
+name = "tool_two"
+description = "Second tool"
+command = ["echo", "two"]
+
+[[tools.parameters]]
+name = "z"
+description = "param z"
+required = true
+---
+
+System prompt here.
+"#;
+
+        let (fm, body) = parse_skill_md(content).unwrap();
+        assert_eq!(fm.name, "multi-tool");
+        assert_eq!(fm.tools.len(), 2);
+        assert_eq!(fm.tools[0].name, "tool_one");
+        assert_eq!(fm.tools[0].parameters.len(), 2);
+        assert_eq!(fm.tools[1].name, "tool_two");
+        assert_eq!(fm.tools[1].parameters.len(), 1);
+        assert_eq!(body, "System prompt here.");
+    }
 }

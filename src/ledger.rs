@@ -232,4 +232,126 @@ impl JobLedger {
 
         Ok(())
     }
+
+    #[cfg(test)]
+    fn from_entries(entries: Vec<LedgerEntry>) -> Self {
+        let map = entries.into_iter().map(|e| (e.job_id.clone(), e)).collect();
+        Self {
+            path: PathBuf::from("/dev/null"),
+            entries: map,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_entry(job_id: &str, status: LedgerStatus, created_at: u64) -> LedgerEntry {
+        LedgerEntry {
+            job_id: job_id.to_string(),
+            status,
+            input: "test input".to_string(),
+            input_type: "text/plain".to_string(),
+            tags: vec![],
+            customer_id: "customer1".to_string(),
+            bid: Some(100),
+            payment_request: "pay-req".to_string(),
+            net_amount: 97,
+            result: None,
+            raw_event_json: "{}".to_string(),
+            created_at,
+            retry_count: 0,
+        }
+    }
+
+    #[test]
+    fn test_all_entries_sorting() {
+        let ledger = JobLedger::from_entries(vec![
+            make_entry("j1", LedgerStatus::Paid, 300),
+            make_entry("j2", LedgerStatus::Delivered, 200),
+            make_entry("j3", LedgerStatus::Executed, 100),
+            make_entry("j4", LedgerStatus::Paid, 400),
+        ]);
+
+        let entries = ledger.all_entries();
+        assert_eq!(entries.len(), 4);
+        // Paid first (newest first): j4(400), j1(300)
+        assert_eq!(entries[0].job_id, "j4");
+        assert_eq!(entries[1].job_id, "j1");
+        // Executed next: j3(100)
+        assert_eq!(entries[2].job_id, "j3");
+        // Delivered last: j2(200)
+        assert_eq!(entries[3].job_id, "j2");
+    }
+
+    #[test]
+    fn test_pending_jobs() {
+        let ledger = JobLedger::from_entries(vec![
+            make_entry("j1", LedgerStatus::Paid, 100),
+            make_entry("j2", LedgerStatus::Executed, 200),
+            make_entry("j3", LedgerStatus::Delivered, 300),
+            make_entry("j4", LedgerStatus::Failed, 400),
+        ]);
+
+        let pending = ledger.pending_jobs();
+        assert_eq!(pending.len(), 2);
+        let ids: Vec<&str> = pending.iter().map(|e| e.job_id.as_str()).collect();
+        assert!(ids.contains(&"j1"));
+        assert!(ids.contains(&"j2"));
+    }
+
+    #[test]
+    fn test_get_status() {
+        let ledger = JobLedger::from_entries(vec![
+            make_entry("j1", LedgerStatus::Paid, 100),
+        ]);
+
+        assert_eq!(ledger.get_status("j1"), Some(LedgerStatus::Paid));
+        assert_eq!(ledger.get_status("missing"), None);
+    }
+
+    #[test]
+    fn test_ledger_status_serde() {
+        let variants = vec![
+            (LedgerStatus::Paid, "\"paid\""),
+            (LedgerStatus::Executed, "\"executed\""),
+            (LedgerStatus::Delivered, "\"delivered\""),
+            (LedgerStatus::Failed, "\"failed\""),
+        ];
+
+        for (status, expected_json) in variants {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(json, expected_json);
+            let back: LedgerStatus = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    #[test]
+    fn test_empty_ledger() {
+        let ledger = JobLedger::from_entries(vec![]);
+
+        assert!(ledger.all_entries().is_empty());
+        assert!(ledger.pending_jobs().is_empty());
+    }
+
+    #[test]
+    fn test_mark_operations() {
+        let mut ledger = JobLedger::from_entries(vec![
+            make_entry("j1", LedgerStatus::Paid, 100),
+        ]);
+
+        // mark_executed
+        ledger.mark_executed("j1", "some result").unwrap();
+        assert_eq!(ledger.get_status("j1"), Some(LedgerStatus::Executed));
+        let entry = &ledger.entries["j1"];
+        assert_eq!(entry.result.as_deref(), Some("some result"));
+
+        // mark_delivered clears result
+        ledger.mark_delivered("j1").unwrap();
+        assert_eq!(ledger.get_status("j1"), Some(LedgerStatus::Delivered));
+        let entry = &ledger.entries["j1"];
+        assert!(entry.result.is_none());
+    }
 }

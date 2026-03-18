@@ -45,3 +45,90 @@ pub fn parse_network(s: &str) -> SolanaNetwork {
         other => SolanaNetwork::Custom(other.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_sol_zero() {
+        assert_eq!(format_sol(0), "0.000000000");
+    }
+
+    #[test]
+    fn format_sol_one_lamport() {
+        assert_eq!(format_sol(1), "0.000000001");
+    }
+
+    #[test]
+    fn format_sol_one_sol() {
+        assert_eq!(format_sol(1_000_000_000), "1.000000000");
+    }
+
+    #[test]
+    fn format_sol_fractional() {
+        assert_eq!(format_sol(1_500_000_000), "1.500000000");
+    }
+
+    #[test]
+    fn format_sol_compact_zero() {
+        assert_eq!(format_sol_compact(0), "0.0000");
+    }
+
+    #[test]
+    fn format_sol_compact_one_sol() {
+        assert_eq!(format_sol_compact(1_000_000_000), "1.0000");
+    }
+
+    #[test]
+    fn format_sol_compact_fractional_truncation() {
+        // 1_500_000_000 → frac = 500_000_000 / 100_000 = 5000
+        assert_eq!(format_sol_compact(1_500_000_000), "1.5000");
+        // 1_123_456_789 → frac = 123_456_789 / 100_000 = 1234
+        assert_eq!(format_sol_compact(1_123_456_789), "1.1234");
+    }
+
+    #[test]
+    fn sol_to_lamports_whole_with_decimal() {
+        assert_eq!(sol_to_lamports("1.0"), Some(1_000_000_000));
+    }
+
+    #[test]
+    fn sol_to_lamports_smallest_unit() {
+        assert_eq!(sol_to_lamports("0.000000001"), Some(1));
+    }
+
+    #[test]
+    fn sol_to_lamports_whole_no_decimal() {
+        assert_eq!(sol_to_lamports("1"), Some(1_000_000_000));
+    }
+
+    #[test]
+    fn sol_to_lamports_half() {
+        assert_eq!(sol_to_lamports("0.5"), Some(500_000_000));
+    }
+
+    #[test]
+    fn sol_to_lamports_invalid_inputs() {
+        assert_eq!(sol_to_lamports(""), None);
+        assert_eq!(sol_to_lamports("  "), None);
+        assert_eq!(sol_to_lamports("1."), None);
+        assert_eq!(sol_to_lamports(".5"), None);
+        assert_eq!(sol_to_lamports("0.1234567890"), None); // >9 decimals
+    }
+
+    #[test]
+    fn parse_network_known() {
+        assert_eq!(parse_network("mainnet"), SolanaNetwork::Mainnet);
+        assert_eq!(parse_network("devnet"), SolanaNetwork::Devnet);
+        assert_eq!(parse_network("testnet"), SolanaNetwork::Testnet);
+    }
+
+    #[test]
+    fn parse_network_custom() {
+        assert_eq!(
+            parse_network("https://my-rpc.example.com"),
+            SolanaNetwork::Custom("https://my-rpc.example.com".to_string()),
+        );
+    }
+}

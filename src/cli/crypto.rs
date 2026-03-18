@@ -125,3 +125,92 @@ pub fn decrypt_secrets(section: &EncryptionSection, password: &str) -> Result<Se
 
     Ok(bundle)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_bundle() -> SecretsBundle {
+        SecretsBundle {
+            nostr_secret_key: "nsec1-test-nostr-key".into(),
+            solana_secret_key: "solana-test-secret-key".into(),
+            llm_api_key: "sk-ant-test-key".into(),
+            customer_llm_api_key: Some("sk-customer-key".into()),
+        }
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let bundle = sample_bundle();
+        let password = "test-password";
+
+        let encrypted = encrypt_secrets(&bundle, password).expect("encryption should succeed");
+        let decrypted = decrypt_secrets(&encrypted, password).expect("decryption should succeed");
+
+        assert_eq!(decrypted.nostr_secret_key, bundle.nostr_secret_key);
+        assert_eq!(decrypted.solana_secret_key, bundle.solana_secret_key);
+        assert_eq!(decrypted.llm_api_key, bundle.llm_api_key);
+        assert_eq!(decrypted.customer_llm_api_key, bundle.customer_llm_api_key);
+    }
+
+    #[test]
+    fn wrong_password_fails() {
+        let bundle = sample_bundle();
+        let encrypted = encrypt_secrets(&bundle, "correct-password").expect("encryption should succeed");
+        let result = decrypt_secrets(&encrypted, "wrong-password");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn secrets_bundle_serde_json_roundtrip() {
+        let bundle = sample_bundle();
+        let json = serde_json::to_string(&bundle).expect("serialize should succeed");
+        let deserialized: SecretsBundle = serde_json::from_str(&json).expect("deserialize should succeed");
+
+        assert_eq!(deserialized.nostr_secret_key, bundle.nostr_secret_key);
+        assert_eq!(deserialized.solana_secret_key, bundle.solana_secret_key);
+        assert_eq!(deserialized.llm_api_key, bundle.llm_api_key);
+        assert_eq!(deserialized.customer_llm_api_key, Some("sk-customer-key".into()));
+    }
+
+    #[test]
+    fn secrets_bundle_serde_none_customer_key() {
+        let json = r#"{
+            "nostr_secret_key": "nsec1",
+            "solana_secret_key": "sol1",
+            "llm_api_key": "sk-ant"
+        }"#;
+        let bundle: SecretsBundle = serde_json::from_str(json).expect("deserialize should succeed");
+        assert_eq!(bundle.nostr_secret_key, "nsec1");
+        assert_eq!(bundle.solana_secret_key, "sol1");
+        assert_eq!(bundle.llm_api_key, "sk-ant");
+        assert_eq!(bundle.customer_llm_api_key, None);
+    }
+
+    #[test]
+    fn invalid_ciphertext_bs58_fails() {
+        let section = EncryptionSection {
+            ciphertext: "!!!not-valid-bs58!!!".into(),
+            salt: bs58::encode([0u8; SALT_LEN]).into_string(),
+            nonce: bs58::encode([0u8; NONCE_LEN]).into_string(),
+        };
+        let result = decrypt_secrets(&section, "any-password");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn invalid_nonce_length_fails() {
+        let section = EncryptionSection {
+            ciphertext: bs58::encode(b"fake-ciphertext").into_string(),
+            salt: bs58::encode([0u8; SALT_LEN]).into_string(),
+            nonce: bs58::encode([0u8; 5]).into_string(), // 5 bytes instead of 12
+        };
+        let result = decrypt_secrets(&section, "any-password");
+        assert!(result.is_err());
+        let err_msg = match result {
+            Err(e) => format!("{}", e),
+            Ok(_) => panic!("expected error"),
+        };
+        assert!(err_msg.contains("invalid nonce length"), "got: {}", err_msg);
+    }
+}

@@ -153,4 +153,52 @@ mod tests {
         let all = reg.all_capabilities();
         assert_eq!(all, vec!["a", "b", "c"]);
     }
+
+    struct NamedDummySkill {
+        skill_name: String,
+        caps: Vec<String>,
+    }
+
+    #[async_trait]
+    impl Skill for NamedDummySkill {
+        fn name(&self) -> &str { &self.skill_name }
+        fn description(&self) -> &str { "named test skill" }
+        fn capabilities(&self) -> &[String] { &self.caps }
+        async fn execute(&self, _input: SkillInput, _ctx: &SkillContext) -> Result<SkillOutput> {
+            Ok(SkillOutput { data: "ok".into(), output_mime: None })
+        }
+    }
+
+    #[test]
+    fn test_empty_registry() {
+        let reg = SkillRegistry::new();
+        assert!(reg.is_empty());
+        assert!(reg.all_capabilities().is_empty());
+        assert!(reg.default_skill().is_none());
+        assert!(reg.route(&["anything".into()]).is_none());
+    }
+
+    #[test]
+    fn test_multiple_skills_same_tag() {
+        let mut reg = SkillRegistry::new();
+        let skill_a = Arc::new(NamedDummySkill {
+            skill_name: "first".into(),
+            caps: vec!["code".into()],
+        });
+        let skill_b = Arc::new(NamedDummySkill {
+            skill_name: "second".into(),
+            caps: vec!["code".into()],
+        });
+        reg.register(skill_a);
+        reg.register(skill_b);
+
+        let found = reg.route(&["code".into()]);
+        assert_eq!(found.unwrap().name(), "first");
+    }
+
+    #[test]
+    fn test_default_skill_empty() {
+        let reg = SkillRegistry::new();
+        assert!(reg.default_skill().is_none());
+    }
 }

@@ -51,3 +51,56 @@ pub fn random_nonce() -> String {
     getrandom::getrandom(&mut buf).expect("failed to generate random bytes");
     bs58::encode(&buf).into_string()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ping_constructor() {
+        let msg = HeartbeatMessage::ping("abc123".into());
+        assert_eq!(msg.msg_type, "elisym_ping");
+        assert_eq!(msg.nonce, "abc123");
+    }
+
+    #[test]
+    fn pong_constructor() {
+        let msg = HeartbeatMessage::pong("xyz789".into());
+        assert_eq!(msg.msg_type, "elisym_pong");
+        assert_eq!(msg.nonce, "xyz789");
+    }
+
+    #[test]
+    fn is_ping_is_pong_predicates() {
+        let ping = HeartbeatMessage::ping("n".into());
+        assert!(ping.is_ping());
+        assert!(!ping.is_pong());
+
+        let pong = HeartbeatMessage::pong("n".into());
+        assert!(pong.is_pong());
+        assert!(!pong.is_ping());
+    }
+
+    #[test]
+    fn json_serde_roundtrip() {
+        let original = HeartbeatMessage::ping("roundtrip_nonce".into());
+        let json_str = serde_json::to_string(&original).unwrap();
+        let deserialized: HeartbeatMessage = serde_json::from_str(&json_str).unwrap();
+        assert_eq!(deserialized.msg_type, original.msg_type);
+        assert_eq!(deserialized.nonce, original.nonce);
+
+        // Verify the "type" rename in JSON
+        let value: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        assert!(value.get("type").is_some());
+        assert!(value.get("msg_type").is_none());
+    }
+
+    #[test]
+    fn random_nonce_non_empty_and_unique() {
+        let a = random_nonce();
+        let b = random_nonce();
+        assert!(!a.is_empty());
+        assert!(!b.is_empty());
+        assert_ne!(a, b);
+    }
+}

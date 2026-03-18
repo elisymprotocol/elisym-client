@@ -309,3 +309,173 @@ pub fn delete_agent(name: &str) -> Result<()> {
     fs::remove_dir_all(dir)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use solana_sdk::signature::Keypair;
+    use solana_sdk::signer::Signer;
+
+    // ── validate_agent_name ──────────────────────────────────────────
+
+    #[test]
+    fn validate_agent_name_empty_returns_err() {
+        assert!(validate_agent_name("").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_dot_returns_err() {
+        assert!(validate_agent_name(".").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_dotdot_returns_err() {
+        assert!(validate_agent_name("..").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_too_long_returns_err() {
+        let long = "a".repeat(65);
+        assert!(validate_agent_name(&long).is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_valid_returns_ok() {
+        assert!(validate_agent_name("my-agent_1").is_ok());
+    }
+
+    #[test]
+    fn validate_agent_name_spaces_returns_err() {
+        assert!(validate_agent_name("my agent").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_slashes_returns_err() {
+        assert!(validate_agent_name("my/agent").is_err());
+    }
+
+    #[test]
+    fn validate_agent_name_unicode_returns_err() {
+        assert!(validate_agent_name("агент").is_err());
+    }
+
+    // ── PaymentSection::solana_address ───────────────────────────────
+
+    #[test]
+    fn solana_address_empty_key_returns_none() {
+        let ps = PaymentSection::default();
+        assert!(ps.solana_address().is_none());
+    }
+
+    #[test]
+    fn solana_address_invalid_bs58_returns_none() {
+        let ps = PaymentSection {
+            solana_secret_key: "not-valid-bs58!!!".to_string(),
+            ..Default::default()
+        };
+        assert!(ps.solana_address().is_none());
+    }
+
+    #[test]
+    fn solana_address_valid_keypair_returns_pubkey() {
+        let kp = Keypair::new();
+        let encoded = bs58::encode(kp.to_bytes()).into_string();
+        let ps = PaymentSection {
+            solana_secret_key: encoded,
+            ..Default::default()
+        };
+        let addr = ps.solana_address().expect("should derive address");
+        assert_eq!(addr, kp.pubkey().to_string());
+    }
+
+    // ── AgentConfig TOML roundtrip ───────────────────────────────────
+
+    #[test]
+    fn agent_config_toml_roundtrip() {
+        let config = AgentConfig {
+            name: "test-agent".to_string(),
+            description: "A test agent".to_string(),
+            capabilities: vec!["cap-a".to_string(), "cap-b".to_string()],
+            relays: vec!["wss://relay.damus.io".to_string()],
+            secret_key: "nsec_placeholder".to_string(),
+            payment: PaymentSection::default(),
+            llm: Some(LlmSection {
+                provider: "anthropic".to_string(),
+                api_key: "sk-test-key".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                max_tokens: 8192,
+            }),
+            customer_llm: None,
+            encryption: None,
+            recovery: RecoverySection::default(),
+        };
+
+        let toml_str = toml::to_string_pretty(&config).expect("serialize");
+        let deserialized: AgentConfig = toml::from_str(&toml_str).expect("deserialize");
+
+        assert_eq!(deserialized.name, config.name);
+        assert_eq!(deserialized.description, config.description);
+        assert_eq!(deserialized.capabilities, config.capabilities);
+        assert_eq!(deserialized.relays, config.relays);
+        assert_eq!(deserialized.secret_key, config.secret_key);
+        assert_eq!(deserialized.payment.chain, config.payment.chain);
+        assert_eq!(deserialized.payment.network, config.payment.network);
+        assert_eq!(deserialized.payment.job_price, config.payment.job_price);
+
+        let llm = deserialized.llm.expect("llm section present");
+        assert_eq!(llm.provider, "anthropic");
+        assert_eq!(llm.model, "claude-sonnet-4-20250514");
+        assert_eq!(llm.max_tokens, 8192);
+    }
+
+    // ── AgentConfig::secrets_bundle ──────────────────────────────────
+
+    #[test]
+    fn secrets_bundle_fields_populated() {
+        let config = AgentConfig {
+            name: "bundle-test".to_string(),
+            description: String::new(),
+            capabilities: vec![],
+            relays: vec![],
+            secret_key: "nostr-secret".to_string(),
+            payment: PaymentSection {
+                solana_secret_key: "solana-secret".to_string(),
+                ..Default::default()
+            },
+            llm: Some(LlmSection {
+                provider: "anthropic".to_string(),
+                api_key: "llm-api-key".to_string(),
+                model: "claude-sonnet-4-20250514".to_string(),
+                max_tokens: 4096,
+            }),
+            customer_llm: None,
+            encryption: None,
+            recovery: RecoverySection::default(),
+        };
+
+        let bundle = config.secrets_bundle();
+        assert_eq!(bundle.nostr_secret_key, "nostr-secret");
+        assert_eq!(bundle.solana_secret_key, "solana-secret");
+        assert_eq!(bundle.llm_api_key, "llm-api-key");
+    }
+
+    #[test]
+    fn secrets_bundle_without_llm_section() {
+        let config = AgentConfig {
+            name: "no-llm".to_string(),
+            description: String::new(),
+            capabilities: vec![],
+            relays: vec![],
+            secret_key: "nostr-key".to_string(),
+            payment: PaymentSection::default(),
+            llm: None,
+            customer_llm: None,
+            encryption: None,
+            recovery: RecoverySection::default(),
+        };
+
+        let bundle = config.secrets_bundle();
+        assert_eq!(bundle.nostr_secret_key, "nostr-key");
+        assert!(bundle.llm_api_key.is_empty());
+    }
+}
