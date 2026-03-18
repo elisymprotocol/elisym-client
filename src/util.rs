@@ -14,13 +14,6 @@ pub fn format_sol_compact(lamports: u64) -> String {
     format!("{}.{:04}", whole, frac)
 }
 
-/// Format basis points as a percentage string (e.g., 300 bps -> "3.00%").
-pub fn format_bps_percent(bps: u64) -> String {
-    let whole = bps / 100;
-    let frac = bps % 100;
-    format!("{}.{:02}%", whole, frac)
-}
-
 /// Parse a SOL amount string (e.g. "1.5") into lamports using integer-only arithmetic.
 /// Returns None for invalid input, zero/negative amounts, or > 9 decimal places.
 pub fn sol_to_lamports(sol_str: &str) -> Option<u64> {

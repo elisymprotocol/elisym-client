@@ -611,6 +611,7 @@ fn cmd_config(name: &str) -> Result<()> {
                                 style("~").dim(),
                                 format_sol(cfg.payment.job_price)
                             );
+                            let funded = agent::is_account_funded(&cfg);
                             loop {
                                 let input: String = Input::new()
                                     .with_prompt("Job price in SOL")
@@ -619,7 +620,7 @@ fn cmd_config(name: &str) -> Result<()> {
 
                                 match sol_to_lamports(&input) {
                                     Some(new_price) => {
-                                        if let Some(err) = agent::validate_job_price(new_price) {
+                                        if let Some(err) = agent::validate_job_price(new_price, funded) {
                                             println!("  {} {}", style("!").yellow(), err);
                                             continue;
                                         }
@@ -814,6 +815,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
     display_wallet_status(&solana, &cfg)?;
 
     let balance = solana.balance().unwrap_or(0);
+    let account_funded = balance > 0;
     if balance == 0 && cfg.payment.network != "mainnet" {
         println!(
             "\n  {} Wallet is empty. Get devnet SOL: {}",
@@ -891,7 +893,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
         // --price flag: set price without interactive prompt (--price 0 = free mode)
         let lamports = sol_to_lamports(price_str)
             .ok_or_else(|| CliError::Other(format!("invalid --price value: {}", price_str)))?;
-        if let Some(err) = agent::validate_job_price(lamports) {
+        if let Some(err) = agent::validate_job_price(lamports, account_funded) {
             return Err(CliError::Other(err));
         }
         if lamports != cfg.payment.job_price {
@@ -921,7 +923,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
 
             match sol_to_lamports(&price_input) {
                 Some(new_price) => {
-                    if let Some(err) = agent::validate_job_price(new_price) {
+                    if let Some(err) = agent::validate_job_price(new_price, account_funded) {
                         println!("  {} {}", style("!").yellow(), err);
                         continue;
                     }
@@ -1248,24 +1250,15 @@ fn cmd_send(name: &str, address: &str, amount: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Use a dummy reference key (not needed for direct sends, but required by the format)
-    let reference = Keypair::new().pubkey().to_string();
-    let request_json = serde_json::json!({
-        "recipient": address,
-        "amount": base_amount,
-        "reference": reference,
-    }).to_string();
-
-    use elisym_core::PaymentProvider;
-    match solana.pay(&request_json) {
-        Ok(result) => {
+    match solana.send_transfer(address, base_amount) {
+        Ok(signature) => {
             println!(
                 "\n  {} Sent {} {}",
                 style("*").green(),
                 style(format_sol_compact(base_amount)).bold(),
                 unit_label
             );
-            println!("  Signature: {}", style(&result.payment_id).dim());
+            println!("  Signature: {}", style(&signature).dim());
 
             // Show updated balance
             if let Ok(new_balance) = solana.balance() {

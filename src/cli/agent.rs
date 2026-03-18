@@ -9,8 +9,27 @@ use super::error::Result;
 
 /// Validate that the provider's net amount (price minus protocol fee) is above
 /// Solana's rent-exempt minimum. Returns an error message if invalid, None if OK.
-pub fn validate_job_price(lamports: u64) -> Option<String> {
-    crate::constants::validate_job_price(lamports)
+///
+/// If `account_funded` is `true`, the rent-exempt check is skipped (account already exists).
+pub fn validate_job_price(lamports: u64, account_funded: bool) -> Option<String> {
+    elisym_core::validate_job_price(lamports, account_funded)
+        .err()
+        .map(|e| e.to_string())
+}
+
+/// Check whether the provider's Solana account has a non-zero balance (i.e. already funded).
+/// Returns `false` on any RPC error — caller should treat as unfunded (conservative).
+pub fn is_account_funded(cfg: &AgentConfig) -> bool {
+    match build_solana_provider(cfg) {
+        Ok(provider) => is_provider_funded(&provider),
+        Err(_) => false,
+    }
+}
+
+/// Check whether an already-built provider has a funded account.
+/// Use this when a `SolanaPaymentProvider` is already available to avoid extra RPC calls.
+pub fn is_provider_funded(provider: &SolanaPaymentProvider) -> bool {
+    provider.balance().is_ok_and(|b| b > 0)
 }
 
 /// Build a SolanaPaymentProvider directly from config (no relay connections needed).

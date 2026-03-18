@@ -5,7 +5,6 @@ use tokio::sync::{mpsc, Mutex, Semaphore};
 use tokio::task::JoinSet;
 
 use crate::cli::error::{CliError, Result};
-use crate::constants::{PROTOCOL_FEE_BPS, PROTOCOL_TREASURY};
 use crate::ledger::{JobLedger, LedgerStatus};
 use crate::skill::{SkillContext, SkillInput, SkillRegistry};
 use crate::transport::{IncomingJob, JobFeedbackStatus, Transport, TransportRaw};
@@ -14,7 +13,7 @@ use crate::tui::AppEvent;
 use nostr_sdk::{EventId, EventBuilder, PublicKey, ToBech32};
 use nostr_sdk::nips::nip19::Nip19Event;
 
-use elisym_core::AgentNode;
+use elisym_core::{AgentNode, calculate_protocol_fee};
 
 use crate::util::format_sol_compact;
 
@@ -764,23 +763,15 @@ async fn collect_payment(
     event_tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> Result<(u64, String, Option<String>)> {
     let job_id = job.job_id.clone();
-    let _payments = agent
-        .payments
-        .as_ref()
-        .ok_or_else(|| CliError::Other("payments not configured".into()))?;
-
-    let fee_amount = (price * PROTOCOL_FEE_BPS).div_ceil(10_000);
 
     let solana = agent
         .solana_payments()
         .ok_or_else(|| CliError::Other("solana payments not configured".into()))?;
 
-    let payment_request = match solana.create_payment_request_with_fee(
+    let payment_request = match solana.create_payment_request_with_protocol_fee(
         price,
         &format!("elisym job {}", job.job_id),
         payment_timeout_secs,
-        PROTOCOL_TREASURY,
-        fee_amount,
     ) {
         Ok(req) => req,
         Err(e) => {
@@ -793,6 +784,8 @@ async fn collect_payment(
             return Err(e.into());
         }
     };
+
+    let fee_amount = calculate_protocol_fee(price).unwrap_or(0);
 
     let _ = event_tx.send(AppEvent::PaymentRequested {
         job_id: job_id.clone(),
@@ -861,13 +854,13 @@ async fn collect_payment(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use elisym_core::calculate_protocol_fee;
 
     #[test]
     fn test_fee_math() {
         // 0.01 SOL = 10_000_000 lamports, 3% fee = 300_000 lamports
         let price: u64 = 10_000_000;
-        let fee = (price * PROTOCOL_FEE_BPS).div_ceil(10_000);
+        let fee = calculate_protocol_fee(price).unwrap();
         assert_eq!(fee, 300_000);
         assert_eq!(price.saturating_sub(fee), 9_700_000);
     }
@@ -876,7 +869,7 @@ mod tests {
     fn test_fee_math_rounding() {
         // Test rounding up with div_ceil
         let price: u64 = 10_000_001;
-        let fee = (price * PROTOCOL_FEE_BPS).div_ceil(10_000);
+        let fee = calculate_protocol_fee(price).unwrap();
         // 10_000_001 * 300 = 3_000_000_300, div_ceil(10_000) = 300_001
         assert_eq!(fee, 300_001);
     }
