@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -17,6 +18,41 @@ use elisym_core::{AgentNode, calculate_protocol_fee};
 
 use crate::util::format_sol_compact;
 
+/// RAII guard that removes a job_id from the in-flight set on drop.
+/// Guarantees cleanup even on panic or early return.
+struct InFlightGuard {
+    job_id: String,
+    set: Arc<Mutex<HashSet<String>>>,
+}
+
+impl InFlightGuard {
+    fn new(job_id: String, set: Arc<Mutex<HashSet<String>>>) -> Self {
+        Self { job_id, set }
+    }
+}
+
+impl Drop for InFlightGuard {
+    fn drop(&mut self) {
+        let job_id = self.job_id.clone();
+        let set = Arc::clone(&self.set);
+        // Use try_lock to avoid blocking in drop; if lock is held, spawn a task
+        let removed = {
+            if let Ok(mut guard) = set.try_lock() {
+                guard.remove(&job_id);
+                true
+            } else {
+                false
+            }
+        };
+        if !removed {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    set.lock().await.remove(&job_id);
+                });
+            }
+        }
+    }
+}
 
 pub struct AgentRuntime {
     agent: Arc<AgentNode>,
@@ -88,6 +124,7 @@ impl AgentRuntime {
 
         let mut tasks: JoinSet<()> = JoinSet::new();
         let semaphore = Arc::new(Semaphore::new(config.max_concurrent_jobs));
+        let in_flight: Arc<Mutex<HashSet<String>>> = Arc::new(Mutex::new(HashSet::new()));
 
         // Run startup recovery
         recover_pending_jobs(
@@ -98,6 +135,7 @@ impl AgentRuntime {
             &config,
             transport.as_ref().as_ref(),
             &event_tx,
+            &in_flight,
         )
         .await;
 
@@ -115,6 +153,7 @@ impl AgentRuntime {
         let recovery_config = Arc::clone(&config);
         let recovery_etx = event_tx.clone();
         let recovery_ledger = Arc::clone(&ledger);
+        let recovery_in_flight = Arc::clone(&in_flight);
         let recovery_interval = config.recovery_interval_secs;
         let recovery_handle = tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(recovery_interval));
@@ -129,6 +168,7 @@ impl AgentRuntime {
                     &recovery_config,
                     recovery_transport.as_ref().as_ref(),
                     &recovery_etx,
+                    &recovery_in_flight,
                 )
                 .await;
             }
@@ -137,6 +177,23 @@ impl AgentRuntime {
         loop {
             tokio::select! {
                 Some(job) = jobs_rx.recv() => {
+                    // Dedup: atomic check+insert into in-flight set
+                    {
+                        let mut ifl = in_flight.lock().await;
+                        if !ifl.insert(job.job_id.clone()) {
+                            tracing::debug!(job_id = %job.job_id, "Skipping duplicate job (in-flight)");
+                            continue;
+                        }
+                    }
+                    // Check ledger separately (without holding in_flight lock)
+                    {
+                        if ledger.lock().await.get_status(&job.job_id).is_some() {
+                            in_flight.lock().await.remove(&job.job_id);
+                            tracing::debug!(job_id = %job.job_id, "Skipping duplicate job (in ledger)");
+                            continue;
+                        }
+                    }
+
                     let _ = event_tx.send(AppEvent::JobReceived {
                         job_id: job.job_id.clone(),
                         customer_id: job.customer_id.clone(),
@@ -151,8 +208,10 @@ impl AgentRuntime {
                     let sem = Arc::clone(&semaphore);
                     let etx = event_tx.clone();
                     let ledger = Arc::clone(&ledger);
+                    let in_flight = Arc::clone(&in_flight);
 
                     tasks.spawn(async move {
+                        let _guard = InFlightGuard::new(job.job_id.clone(), Arc::clone(&in_flight));
                         let _permit = match sem.acquire().await {
                             Ok(p) => p,
                             Err(_) => return,
@@ -176,6 +235,7 @@ impl AgentRuntime {
                         &config,
                         transport.as_ref().as_ref(),
                         &event_tx,
+                        &in_flight,
                     )
                     .await;
                 }
@@ -361,6 +421,7 @@ async fn process_job(
 ///
 /// - `Executed` jobs (have result cached) → retry delivery only.
 /// - `Paid` jobs (no result) → re-execute skill + deliver.
+#[allow(clippy::too_many_arguments)]
 async fn recover_pending_jobs(
     ledger: &Mutex<JobLedger>,
     agent: &AgentNode,
@@ -369,6 +430,7 @@ async fn recover_pending_jobs(
     config: &RuntimeConfig,
     transport: &dyn Transport,
     event_tx: &mpsc::UnboundedSender<AppEvent>,
+    in_flight: &Mutex<HashSet<String>>,
 ) {
     let pending: Vec<_> = {
         let lg = ledger.lock().await;
@@ -380,6 +442,11 @@ async fn recover_pending_jobs(
     }
 
     for entry in pending {
+        // Skip jobs currently being processed by the main loop
+        if in_flight.lock().await.contains(&entry.job_id) {
+            tracing::debug!(job_id = %entry.job_id, "Recovery: skipping in-flight job");
+            continue;
+        }
         if entry.retry_count >= config.recovery_max_retries {
             let mut lg = ledger.lock().await;
             let _ = lg.mark_failed(&entry.job_id);
@@ -397,7 +464,7 @@ async fn recover_pending_jobs(
         }
 
         // Verify payment is still confirmed on-chain
-        if !config.job_price == 0 {
+        if config.job_price != 0 {
             let still_paid = if let Some(payments) = agent.payments.as_ref() {
                 match payments.lookup_payment(&entry.payment_request) {
                     Ok(status) => status.settled,

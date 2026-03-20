@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -161,7 +161,23 @@ impl Transport for NostrTransport {
         let own_pubkey_hex = self.agent.identity.public_key().to_hex();
         let job_price = self.job_price;
         tokio::spawn(async move {
+            let mut seen_job_ids: HashSet<String> = HashSet::new();
+            let mut seen_job_order: VecDeque<String> = VecDeque::new();
+            const MAX_SEEN_JOBS: usize = 10_000;
             while let Some(job) = jobs_rx.recv().await {
+                // Dedup: skip if we've already forwarded this job event
+                let job_id_str = job.event_id.to_string();
+                if !seen_job_ids.insert(job_id_str.clone()) {
+                    tracing::debug!(job_id = %job.event_id, "Skipping duplicate job event from relay");
+                    continue;
+                }
+                seen_job_order.push_back(job_id_str);
+                if seen_job_order.len() > MAX_SEEN_JOBS {
+                    if let Some(old) = seen_job_order.pop_front() {
+                        seen_job_ids.remove(&old);
+                    }
+                }
+
                 let customer_id = job.customer.to_string();
 
                 let is_directed = job
