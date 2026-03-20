@@ -4,6 +4,26 @@ use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Scrollbar, Scrollba
 use super::{App, Focus, JobStatus, Screen};
 use crate::util::format_sol_compact;
 
+const INPUT_BYTE_LIMIT: usize = 1024;
+
+/// Truncate a string at the last char boundary on or before `max_bytes`.
+/// Returns the truncated slice (guaranteed valid UTF-8).
+fn truncate_input(s: &str) -> &str {
+    if s.len() <= INPUT_BYTE_LIMIT {
+        return s;
+    }
+    tracing::warn!(
+        len = s.len(),
+        "job input exceeds {} bytes, truncating for display",
+        INPUT_BYTE_LIMIT,
+    );
+    let mut end = INPUT_BYTE_LIMIT;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 // ── Theme helpers ──
 // Use only ANSI colors + modifiers so the terminal palette handles light/dark.
 // `Color::Reset` = terminal's default fg/bg — always readable.
@@ -329,10 +349,11 @@ fn render_detail(f: &mut Frame, app: &mut App, job_idx: usize) {
         .map(|n| format!(" (net: {} SOL)", format_sol_compact(n)))
         .unwrap_or_default();
 
-    let input_preview = if job.input.len() > 60 {
-        format!("{}…", &job.input[..60])
+    let trimmed = truncate_input(&job.input);
+    let input_preview = if trimmed.len() < job.input.len() {
+        format!("{}…", trimmed)
     } else {
-        job.input.clone()
+        trimmed.to_string()
     };
     let input_preview = input_preview.replace('\n', " ");
 
@@ -604,10 +625,11 @@ fn render_recovery(f: &mut Frame, app: &mut App) {
 
             let net_sol = crate::util::format_sol_compact(entry.net_amount);
 
-            let input_preview = if entry.input.len() > 80 {
-                format!("{}…", &entry.input[..80])
+            let trimmed = truncate_input(&entry.input);
+            let input_preview = if trimmed.len() < entry.input.len() {
+                format!("{}…", trimmed)
             } else {
-                entry.input.clone()
+                trimmed.to_string()
             };
             let input_preview = input_preview.replace('\n', " ");
 
