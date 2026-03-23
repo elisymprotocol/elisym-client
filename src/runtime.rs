@@ -71,6 +71,7 @@ pub struct RuntimeConfig {
     pub recovery_max_retries: u32,
     pub recovery_interval_secs: u64,
     pub network: String,
+    pub publish_notes: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -82,6 +83,7 @@ impl Default for RuntimeConfig {
             recovery_max_retries: 5,
             recovery_interval_secs: 60,
             network: "devnet".to_string(),
+            publish_notes: false,
         }
     }
 }
@@ -400,11 +402,13 @@ async fn process_job(
         result_len,
     });
 
-    // Publish deal note
-    if let Some(net_amount) = amount {
-        publish_deal_note(agent, &job, result_event_id, net_amount, tx_signature.as_deref(), &config.network).await;
-    } else {
-        publish_free_note(agent, &job, result_event_id).await;
+    // Publish deal note (opt-in via [social] publish_notes)
+    if config.publish_notes {
+        if let Some(net_amount) = amount {
+            publish_deal_note(agent, &job, result_event_id, net_amount, tx_signature.as_deref(), &config.network).await;
+        } else {
+            publish_free_note(agent, &job, result_event_id).await;
+        }
     }
 
     // Update wallet balance

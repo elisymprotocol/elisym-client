@@ -21,6 +21,7 @@ pub struct NostrTransport {
     event_tx: mpsc::UnboundedSender<AppEvent>,
     delivery_retries: u32,
     job_price: u64,
+    auto_engage: bool,
 }
 
 impl NostrTransport {
@@ -30,6 +31,7 @@ impl NostrTransport {
         event_tx: mpsc::UnboundedSender<AppEvent>,
         delivery_retries: u32,
         job_price: u64,
+        auto_engage: bool,
     ) -> Self {
         Self {
             agent,
@@ -37,6 +39,7 @@ impl NostrTransport {
             event_tx,
             delivery_retries,
             job_price,
+            auto_engage,
         }
     }
 }
@@ -69,7 +72,8 @@ impl Transport for NostrTransport {
             }
         });
 
-        // Spawn auto-engage: like + repost new posts from elisymlabs
+        // Spawn auto-engage: like + repost new posts from elisymlabs (opt-in)
+        if self.auto_engage {
         if let Ok(protocol_pk) = PublicKey::from_hex(ELISYM_PROTOCOL_PUBKEY) {
             let client = self.agent.client.clone();
 
@@ -142,6 +146,7 @@ impl Transport for NostrTransport {
                 }
             });
         }
+        } // auto_engage
 
         // Spawn job forwarding — only accept jobs with t:elisym tag
         let own_pubkey_hex = self.agent.identity.public_key().to_hex();

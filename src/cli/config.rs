@@ -49,6 +49,8 @@ pub struct AgentConfig {
     pub encryption: Option<super::crypto::EncryptionSection>,
     #[serde(default)]
     pub recovery: RecoverySection,
+    #[serde(default)]
+    pub social: SocialSection,
 }
 
 // Custom Debug impl to avoid leaking secret keys and API keys in logs.
@@ -222,6 +224,25 @@ impl Default for RecoverySection {
             delivery_retries: 3,
             max_retries: 5,
             interval_secs: 60,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct SocialSection {
+    /// Automatically like and repost elisymlabs posts.
+    #[serde(default)]
+    pub auto_engage: bool,
+    /// Publish a Nostr note after each completed job.
+    #[serde(default)]
+    pub publish_notes: bool,
+}
+
+impl Default for SocialSection {
+    fn default() -> Self {
+        Self {
+            auto_engage: false,
+            publish_notes: false,
         }
     }
 }
@@ -408,6 +429,7 @@ mod tests {
             customer_llm: None,
             encryption: None,
             recovery: RecoverySection::default(),
+            social: SocialSection::default(),
         };
 
         let toml_str = toml::to_string_pretty(&config).expect("serialize");
@@ -451,6 +473,7 @@ mod tests {
             customer_llm: None,
             encryption: None,
             recovery: RecoverySection::default(),
+            social: SocialSection::default(),
         };
 
         let bundle = config.secrets_bundle();
@@ -472,6 +495,7 @@ mod tests {
             customer_llm: None,
             encryption: None,
             recovery: RecoverySection::default(),
+            social: SocialSection::default(),
         };
 
         let bundle = config.secrets_bundle();

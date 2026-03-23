@@ -540,6 +540,7 @@ fn cmd_init() -> Result<String> {
         customer_llm: None,
         encryption: None,
         recovery: Default::default(),
+        social: Default::default(),
     };
 
     if let Some(ref password) = encryption_password {
@@ -984,6 +985,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
         recovery_max_retries: cfg.recovery.max_retries,
         recovery_interval_secs: cfg.recovery.interval_secs,
         network: cfg.payment.network.clone(),
+        publish_notes: cfg.social.publish_notes,
     };
 
     let agent_node = with_spinner(
@@ -1025,6 +1027,7 @@ async fn cmd_start(name: Option<String>, headless: bool, price: Option<String>) 
             event_tx.clone(),
             cfg.recovery.delivery_retries,
             cfg.payment.job_price,
+            cfg.social.auto_engage,
         ),
     );
 
