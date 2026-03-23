@@ -198,7 +198,7 @@ jobs:
       - name: Update Homebrew formula
         uses: actions/checkout@v5
         with:
-          repository: elisymprotocol/homebrew-tap
+          repository: elisymlabs/homebrew-tap
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
@@ -206,29 +206,29 @@ jobs:
         run: |
           cat > homebrew-tap/Formula/elisym.rb << 'RUBY'
           class Elisym < Formula
-            desc "CLI agent runner for the elisym protocol"
-            homepage "https://github.com/elisymprotocol/elisym-client"
+            desc "CLI agent runner for elisym"
+            homepage "https://github.com/elisymlabs/elisym-client"
             version "$VERSION"
             license "MIT"
 
             on_macos do
               on_arm do
-                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-aarch64-apple-darwin.tar.gz"
+                url "https://github.com/elisymlabs/elisym-client/releases/download/$VERSION/elisym-aarch64-apple-darwin.tar.gz"
                 sha256 "$SHA_AARCH64_APPLE"
               end
               on_intel do
-                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-x86_64-apple-darwin.tar.gz"
+                url "https://github.com/elisymlabs/elisym-client/releases/download/$VERSION/elisym-x86_64-apple-darwin.tar.gz"
                 sha256 "$SHA_X86_64_APPLE"
               end
             end
 
             on_linux do
               on_arm do
-                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-aarch64-unknown-linux-gnu.tar.gz"
+                url "https://github.com/elisymlabs/elisym-client/releases/download/$VERSION/elisym-aarch64-unknown-linux-gnu.tar.gz"
                 sha256 "$SHA_AARCH64_LINUX"
               end
               on_intel do
-                url "https://github.com/elisymprotocol/elisym-client/releases/download/$VERSION/elisym-x86_64-unknown-linux-gnu.tar.gz"
+                url "https://github.com/elisymlabs/elisym-client/releases/download/$VERSION/elisym-x86_64-unknown-linux-gnu.tar.gz"
                 sha256 "$SHA_X86_64_LINUX"
               end
             end

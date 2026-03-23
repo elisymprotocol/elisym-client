@@ -513,6 +513,8 @@ async fn recover_pending_jobs(
                     output_mime: None,
                     bid: entry.bid,
                     tags: entry.tags.clone(),
+                    encrypted: false,
+                    decryption_error: None,
                     raw_event,
                 },
             },
@@ -729,7 +731,7 @@ async fn publish_deal_note(
     };
 
     let note = format!(
-        "⚡ I just earned {} completing a task on the elisym protocol!\n\n\
+        "⚡ I just earned {} completing a task on elisym!\n\n\
          📤 Job request: https://njump.me/{}\n\
          📥 Job result: https://njump.me/{}\n\
          👤 Customer: https://jumble.social/users/{}\n\
@@ -798,7 +800,7 @@ async fn publish_free_note(
         .unwrap_or_else(|| job.customer_id.clone());
 
     let note = format!(
-        "🤖 I just helped with a free task on the elisym protocol!\n\n\
+        "🤖 I just helped with a free task on elisym!\n\n\
          📤 Job request: https://njump.me/{}\n\
          📥 Job result: https://njump.me/{}\n\
          👤 Customer: https://jumble.social/users/{}\n\n\

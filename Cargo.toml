@@ -1,18 +1,18 @@
 [package]
 name = "elisym-client"
-version = "0.5.4"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.93"
-description = "CLI agent runner for the elisym protocol"
+description = "CLI agent runner for elisym"
 license = "MIT"
-repository = "https://github.com/elisymprotocol/elisym-client"
+repository = "https://github.com/elisymlabs/elisym-client"
 
 [[bin]]
 name = "elisym"
 path = "src/main.rs"
 
 [dependencies]
-elisym-core = { version = "0.13.4", default-features = false, features = ["payments-solana"] }
+elisym-core = { version = "0.14.0", default-features = false, features = ["payments-solana"] }
 clap = { version = "4", features = ["derive"] }
 dialoguer = "0.11"
 console = "0.15"

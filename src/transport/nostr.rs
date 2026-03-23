@@ -10,7 +10,6 @@ use nostr_sdk::prelude::EventBuilder;
 use tokio::sync::mpsc;
 
 use crate::cli::error::Result;
-use crate::cli::protocol::HeartbeatMessage;
 use crate::constants::ELISYM_PROTOCOL_PUBKEY;
 use crate::tui::AppEvent;
 
@@ -51,43 +50,30 @@ impl Transport for NostrTransport {
             .subscribe_to_job_requests(&self.kind_offsets)
             .await?;
 
-        let mut messages_rx = self.agent.messaging.subscribe_to_messages().await?;
+        let mut pings_rx = self.agent.messaging.subscribe_to_pings().await?;
         let started_at = Timestamp::now();
 
         let (tx, rx) = mpsc::channel(64);
 
-        // Spawn ping/pong handler (liveness check for dashboard UX)
+        // Spawn ping/pong handler (ephemeral kind:20100/20101)
         let agent_ping = Arc::clone(&self.agent);
         let etx_ping = self.event_tx.clone();
         tokio::spawn(async move {
-            while let Some(msg) = messages_rx.recv().await {
-                if msg.timestamp < started_at {
-                    continue;
-                }
-                let heartbeat: HeartbeatMessage = match serde_json::from_str(&msg.content) {
-                    Ok(hb) => hb,
-                    Err(_) => continue,
-                };
-                if heartbeat.is_ping() {
-                    let sender_str = msg.sender.to_string();
-                    tracing::info!(sender = %sender_str, "Ping received");
-                    let _ = etx_ping.send(AppEvent::Ping {
-                        from: sender_str,
-                    });
-                    let pong = HeartbeatMessage::pong(heartbeat.nonce);
-                    let _ = agent_ping
-                        .messaging
-                        .send_structured_message(&msg.sender, &pong)
-                        .await;
-                }
+            while let Some((sender, nonce)) = pings_rx.recv().await {
+                let sender_str = sender.to_string();
+                tracing::info!(sender = %sender_str, "Ping received");
+                let _ = etx_ping.send(AppEvent::Ping {
+                    from: sender_str,
+                });
+                let _ = agent_ping.messaging.send_pong(&sender, &nonce).await;
             }
         });
 
-        // Spawn auto-engage: like + repost new posts from elisymprotocol
+        // Spawn auto-engage: like + repost new posts from elisymlabs
         if let Ok(protocol_pk) = PublicKey::from_hex(ELISYM_PROTOCOL_PUBKEY) {
             let client = self.agent.client.clone();
 
-            // Connect to extra relays where elisymprotocol posts
+            // Connect to extra relays where elisymlabs posts
             for relay_url in crate::constants::ENGAGE_RELAYS {
                 if let Err(e) = client.add_relay(*relay_url).await {
                     tracing::warn!(relay = relay_url, error = %e, "Auto-engage: failed to add relay");
@@ -106,7 +92,7 @@ impl Transport for NostrTransport {
                 protocol_pubkey = %ELISYM_PROTOCOL_PUBKEY,
                 since = %started_at,
                 subscribe_ok = sub_result.is_ok(),
-                "Auto-engage: subscribed to elisymprotocol posts"
+                "Auto-engage: subscribed to elisymlabs posts"
             );
 
             tokio::spawn(async move {
@@ -137,7 +123,7 @@ impl Transport for NostrTransport {
                             tracing::debug!(event_id = %event.id, "Auto-engage: skipping duplicate");
                             continue;
                         }
-                        tracing::info!(event_id = %event.id, "Auto-engaging with elisymprotocol post");
+                        tracing::info!(event_id = %event.id, "Auto-engaging with elisymlabs post");
 
                         // Like (Kind 7 reaction)
                         let reaction = EventBuilder::reaction(&event, "+");

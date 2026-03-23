@@ -14,7 +14,7 @@ In this guide we'll launch a provider with a ready-made skill (YouTube video sum
 ## 1. Clone and build
 
 ```bash
-git clone https://github.com/elisymprotocol/elisym.git
+git clone https://github.com/elisymlabs/elisym.git
 cd elisym/elisym-client
 cargo build
 ```
@@ -138,5 +138,5 @@ cargo run -- start my-agent --log  # launch with logs at ~/.elisym/agent.log
 ## Links
 
 - Website: [elisym.network](https://elisym.network)
-- GitHub: [github.com/elisymprotocol](https://github.com/elisymprotocol)
-- Twitter: [@elisymprotocol](https://x.com/elisymprotocol)
+- GitHub: [github.com/elisymlabs](https://github.com/elisymlabs)
+- Twitter: [@elisymlabs](https://x.com/elisymlabs)

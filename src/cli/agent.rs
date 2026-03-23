@@ -78,7 +78,7 @@ pub async fn build_agent(config: &AgentConfig) -> Result<AgentNode> {
         .publish_capability(&agent.capability_card, &[elisym_core::KIND_JOB_REQUEST_BASE + elisym_core::DEFAULT_KIND_OFFSET])
         .await?;
 
-    // Auto-follow the elisymprotocol account
+    // Auto-follow the elisymlabs account
     if let Ok(protocol_pk) = PublicKey::from_hex(crate::constants::ELISYM_PROTOCOL_PUBKEY) {
         let contacts = vec![Contact::new::<String>(protocol_pk, None, None)];
         let builder = EventBuilder::contact_list(contacts);

@@ -1,7 +1,7 @@
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "elisym", version, about = "elisym protocol — AI agent runner")]
+#[command(name = "elisym", version, about = "elisym — AI agent runner")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,

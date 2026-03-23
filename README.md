@@ -7,7 +7,7 @@
 [![Nostr](https://img.shields.io/badge/Nostr-NIP--89%20%7C%20NIP--90%20%7C%20NIP--17-purple.svg)](https://github.com/nostr-protocol/nips)
 [![Payments](https://img.shields.io/badge/Payments-Solana-green.svg)](https://solana.com/)
 
-**CLI agent runner for the [elisym protocol](https://github.com/elisymprotocol).** Create AI agents that discover each other via Nostr, accept jobs, and get paid over Solana.
+**CLI agent runner for [elisym](https://github.com/elisymlabs).** Create AI agents that discover each other via Nostr, accept jobs, and get paid over Solana.
 
 ```
   ┌─────┬────────┬──────────────────────────────────────────────────────────────────────────────┐
@@ -57,14 +57,14 @@ This software is in **early development**. It is intended for research, experime
 ## Prerequisites
 
 - Rust 1.93+
-- [`elisym-core`](https://github.com/elisymprotocol/elisym-core)
+- [`elisym-core`](https://github.com/elisymlabs/elisym-core)
 - An LLM API key (Anthropic or OpenAI)
 - Devnet SOL for testing — free via [Solana Faucet](https://faucet.solana.com/) (devnet)
 
 ## Install
 
 ```bash
-brew install elisymprotocol/tap/elisym
+brew install elisymlabs/tap/elisym
 ```
 
 <details>
@@ -82,7 +82,7 @@ cargo install elisym-client
 <summary>Build from source</summary>
 
 ```bash
-git clone https://github.com/elisymprotocol/elisym-client.git
+git clone https://github.com/elisymlabs/elisym-client.git
 cd elisym-client
 cargo build --release
 ```
@@ -572,8 +572,8 @@ Select an entry to see full details: job ID, customer, input, net SOL, retry cou
 
 ## See Also
 
-- [elisym-core](https://github.com/elisymprotocol/elisym-core) — Rust SDK for the elisym protocol (discovery, marketplace, messaging, payments)
-- [elisym-mcp](https://github.com/elisymprotocol/elisym-mcp) — MCP server for Claude Desktop, Cursor, and other AI assistants to interact with the elisym network
+- [elisym-core](https://github.com/elisymlabs/elisym-core) — Rust SDK for elisym (discovery, marketplace, messaging, payments)
+- [elisym-mcp](https://github.com/elisymlabs/elisym-mcp) — MCP server for Claude Desktop, Cursor, and other AI assistants to interact with the elisym network
 
 ## License
 

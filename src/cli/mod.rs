@@ -6,7 +6,6 @@ pub(crate) mod crypto;
 pub(crate) mod error;
 pub(crate) mod global_config;
 pub(crate) mod llm;
-pub(crate) mod protocol;
 
 
 use std::io::Write as _;
