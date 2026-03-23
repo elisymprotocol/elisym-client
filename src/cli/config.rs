@@ -228,7 +228,7 @@ impl Default for RecoverySection {
     }
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct SocialSection {
     /// Automatically like and repost elisymlabs posts.
     #[serde(default)]
@@ -236,15 +236,6 @@ pub struct SocialSection {
     /// Publish a Nostr note after each completed job.
     #[serde(default)]
     pub publish_notes: bool,
-}
-
-impl Default for SocialSection {
-    fn default() -> Self {
-        Self {
-            auto_engage: false,
-            publish_notes: false,
-        }
-    }
 }
 
 /// Root directory: ~/.elisym/agents/
