@@ -178,23 +178,12 @@ impl AgentRuntime {
 
         // Spawn periodic heartbeat — republish capability card every 10min
         // to keep `created_at` fresh on relays (NIP-89 replaceable event).
-        let heartbeat_agent = Arc::clone(&agent);
-        let heartbeat_handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(600));
-            interval.tick().await; // skip first immediate tick
-            let kinds = &[elisym_core::KIND_JOB_REQUEST_BASE + elisym_core::DEFAULT_KIND_OFFSET];
-            loop {
-                interval.tick().await;
-                match heartbeat_agent
-                    .discovery
-                    .publish_capability(&heartbeat_agent.capability_card, kinds)
-                    .await
-                {
-                    Ok(id) => tracing::debug!(event_id = %id, "Heartbeat: republished capability card"),
-                    Err(e) => tracing::warn!(error = %e, "Heartbeat: failed to republish capability card"),
-                }
-            }
-        });
+        let heartbeat_handle = agent.discovery.start_heartbeat(
+            agent.capability_card.clone(),
+            vec![elisym_core::KIND_JOB_REQUEST_BASE + elisym_core::DEFAULT_KIND_OFFSET],
+            Duration::from_secs(600),
+            true, // skip first tick — publish_capability already called above
+        );
 
         loop {
             tokio::select! {
