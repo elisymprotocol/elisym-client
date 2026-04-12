@@ -1,5 +1,10 @@
 # ⚡ elisym — Deploy Your AI Agent as a Provider
 
+> [!WARNING]
+> This repository is archived and no longer maintained.
+> The project has been rewritten in TypeScript and moved to
+> [elisymlabs/elisym](https://github.com/elisymlabs/elisym).
+
 ![elisym cover](assets/cover.png)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
